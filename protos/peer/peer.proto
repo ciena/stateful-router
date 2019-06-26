@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package peer;
+
+service Peer {
+  rpc Connected(ConnectedRequest) returns (ConnectedResponse) {}
+  rpc Ready(ReadyRequest) returns (google.protobuf.Empty) {}
+  rpc Handoff(HandoffRequest) returns (google.protobuf.Empty) {}
+}
+
+message ConnectedRequest {
+  uint32 ordinal = 1;
+  repeated uint64 devices = 2;
+}
+
+message ConnectedResponse {
+  repeated uint64 devices = 1;
+}
+
+message ReadyRequest {
+  uint32 ordinal = 1;
+}
+
+message HandoffRequest {
+  uint32 ordinal = 1;
+  uint64 device = 2;
+}
