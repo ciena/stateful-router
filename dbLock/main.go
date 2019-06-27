@@ -70,20 +70,40 @@ func (i dbConnection) Lock(ctx context.Context, request *db.LockRequest) (*db.Lo
 	defer fmt.Println("end Lock()")
 
 	device := i.getDevice(request.Device)
-	select {
-	case <-ctx.Done():
-		// disconnected before device lock acquired
-		return &db.LockResponse{}, nil
+acquireLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			// disconnected before device lock acquired
+			return &db.LockResponse{}, nil
 
-	case device.mutex <- struct{}{}: //acquire lock
-		i.mutex.Lock()
-		defer i.mutex.Unlock()
+		case <-time.After(device.expire.Sub(time.Now())):
 
-		lockId := i.nextLockID()
-		device.lockID = lockId
-		device.expire = time.Now().Add(time.Second * 5)
-		return &db.LockResponse{LockId: lockId}, nil
+			i.mutex.Lock()
+			//if time has expired
+			if time.Now().After(device.expire) {
+				// if locked, unlock
+				if device.lockID != 0 {
+					// release mutex
+					device.lockID = 0
+					<-device.mutex
+				}
+			}
+			i.mutex.Unlock()
+			continue acquireLoop
+
+		case device.mutex <- struct{}{}: //acquire lock
+			break acquireLoop
+		}
 	}
+
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+
+	lockId := i.nextLockID()
+	device.lockID = lockId
+	device.expire = time.Now().Add(time.Second * 5)
+	return &db.LockResponse{LockId: lockId}, nil
 }
 
 func (i dbConnection) Unlock(ctx context.Context, request *db.UnlockRequest) (*empty.Empty, error) {
@@ -104,6 +124,8 @@ func (i dbConnection) Unlock(ctx context.Context, request *db.UnlockRequest) (*e
 }
 
 func (i dbConnection) SetData(ctx context.Context, request *db.SetDataRequest) (*empty.Empty, error) {
+	fmt.Println("start SetData()")
+	defer fmt.Println("end SetData()")
 	device := i.getDevice(request.Device)
 
 	i.mutex.Lock()
@@ -118,6 +140,8 @@ func (i dbConnection) SetData(ctx context.Context, request *db.SetDataRequest) (
 }
 
 func (i dbConnection) GetData(ctx context.Context, request *db.GetDataRequest) (*db.GetDataResponse, error) {
+	fmt.Println("start GetData()")
+	defer fmt.Println("end GetData()")
 	device := i.getDevice(request.Device)
 
 	i.mutex.Lock()
