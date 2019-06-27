@@ -25,7 +25,10 @@ func (ha *statefulService) start() {
 func (ha *statefulService) Lock(ctx context.Context, request *stateful.LockRequest) (*stateful.LockResponse, error) {
 	// process, load local state, whatever.
 	response, err := ha.dbClient.Lock(context.Background(), &db.LockRequest{Device: request.Device})
-	return &stateful.LockResponse{LockId: response.LockId}, err
+	if err != nil {
+		return &stateful.LockResponse{}, err
+	}
+	return &stateful.LockResponse{LockId: response.LockId}, nil
 }
 
 func (ha *statefulService) Unlock(ctx context.Context, request *stateful.UnlockRequest) (*empty.Empty, error) {
@@ -40,6 +43,8 @@ func (ha *statefulService) SetData(ctx context.Context, request *stateful.SetDat
 
 func (ha *statefulService) GetData(ctx context.Context, request *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
 	response, err := ha.dbClient.GetData(ctx, &db.GetDataRequest{Lock: request.Lock, Device: request.Device})
-	return &stateful.GetDataResponse{Data: response.Data}, err
+	if err != nil {
+		return &stateful.GetDataResponse{}, err
+	}
+	return &stateful.GetDataResponse{Data: response.Data}, nil
 }
-

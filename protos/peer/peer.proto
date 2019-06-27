@@ -5,18 +5,14 @@ import "google/protobuf/empty.proto";
 package peer;
 
 service Peer {
-  rpc Connected(ConnectedRequest) returns (ConnectedResponse) {}
+  rpc Hello(HelloRequest) returns (google.protobuf.Empty) {}
   rpc Ready(ReadyRequest) returns (google.protobuf.Empty) {}
   rpc Handoff(HandoffRequest) returns (google.protobuf.Empty) {}
 }
 
-message ConnectedRequest {
+message HelloRequest {
   uint32 ordinal = 1;
-  repeated uint64 devices = 2;
-}
-
-message ConnectedResponse {
-  repeated uint64 devices = 1;
+  bool ready = 2;
 }
 
 message ReadyRequest {
@@ -24,6 +20,5 @@ message ReadyRequest {
 }
 
 message HandoffRequest {
-  uint32 ordinal = 1;
   uint64 device = 2;
 }
