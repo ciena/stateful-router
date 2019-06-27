@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+const maxBackoff = time.Second * 4
+const waitReadyTime = time.Second * 5
+
 type routingService struct {
 	ordinal uint32
 
@@ -59,11 +62,11 @@ func NewRoutingService(ordinal uint32) stateful.StatefulServer {
 
 func (ha *routingService) start() {
 	for i := uint32(0); i < ha.ordinal; i++ {
-		ha.connect(i, false)
+		ha.connect(i)
 	}
 
 	//wait a bit, for connections to be established
-	time.AfterFunc(time.Second*5, ha.makeReady)
+	time.AfterFunc(waitReadyTime, ha.makeReady)
 
 	lis, err := net.Listen("tcp", addressFromOrdinal(ha.ordinal))
 	if err != nil {
@@ -97,13 +100,13 @@ func addressFromOrdinal(ordinal uint32) string {
 	return fmt.Sprintf("localhost:%d", 6000+ordinal)
 }
 
-func (ha *routingService) connect(ordinal uint32, ready bool) {
+func (ha *routingService) connect(ordinal uint32) {
 	ha.peerMutex.Lock()
 	defer ha.peerMutex.Unlock()
 
 	if _, have := ha.peers[ordinal]; !have {
 		fmt.Println("connecting to", ordinal)
-		cc, err := grpc.Dial(addressFromOrdinal(ordinal), grpc.WithInsecure())
+		cc, err := grpc.Dial(addressFromOrdinal(ordinal), grpc.WithInsecure(), grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: maxBackoff}))
 		if err != nil {
 			panic(err)
 		}
@@ -111,7 +114,6 @@ func (ha *routingService) connect(ordinal uint32, ready bool) {
 		ha.peers[ordinal] = &node{
 			StatefulClient: stateful.NewStatefulClient(cc),
 			PeerClient:     peer.NewPeerClient(cc),
-			ready:          ready,
 		}
 
 		go ha.watchState(cc, ordinal)
@@ -129,7 +131,16 @@ func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 			ha.peers[ordinal].connected = true
 			ha.peerMutex.Unlock()
 
-			peer.NewPeerClient(cc).Hello(context.Background(), &peer.HelloRequest{Ordinal: ha.ordinal, Ready: ha.ready})
+			_, err := peer.NewPeerClient(cc).Hello(context.Background(), &peer.HelloRequest{Ordinal: ha.ordinal})
+
+			if err == nil {
+				ha.peerMutex.RLock()
+				ready := ha.ready
+				ha.peerMutex.RUnlock()
+				if ready {
+					peer.NewPeerClient(cc).Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal})
+				}
+			}
 		} else if lastState == connectivity.Ready {
 			// if the disconnected node has a greater ordinal than this one, just drop the connection
 			ha.peerMutex.Lock()
@@ -155,7 +166,7 @@ func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 // peer interface impl
 
 func (ha *routingService) Hello(ctx context.Context, request *peer.HelloRequest) (*empty.Empty, error) {
-	ha.connect(request.Ordinal, request.Ready)
+	ha.connect(request.Ordinal)
 	return &empty.Empty{}, nil
 }
 
@@ -257,6 +268,7 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, stateful.Sta
 		//send to peer
 		client := ha.peers[node]
 		ha.peerMutex.RUnlock()
+		fmt.Println("Forwarding request to node", node)
 		return nil, nil, client, false, nil
 	}
 

@@ -12,7 +12,6 @@ service Peer {
 
 message HelloRequest {
   uint32 ordinal = 1;
-  bool ready = 2;
 }
 
 message ReadyRequest {

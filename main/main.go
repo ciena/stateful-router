@@ -48,16 +48,15 @@ func main() {
 }
 
 func sendDummyRequests(client stateful.StatefulServer, ordinal uint32) {
-	for {
+	for device := uint64(0); true; device = (device + 1) % 6 {
 		time.Sleep(time.Second * 1)
-
-		if response, err := client.GetData(context.Background(), &stateful.GetDataRequest{Device: 0}); err != nil {
+		if response, err := client.GetData(context.Background(), &stateful.GetDataRequest{Device: device}); err != nil {
 			fmt.Println(err)
 		} else {
-			fmt.Println(string(response.Data))
+			fmt.Println("Data:", string(response.Data))
 		}
 
-		if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: 0, Data: []byte(fmt.Sprint("some string ", ordinal))}); err != nil {
+		if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: device, Data: []byte(fmt.Sprint("some string ", ordinal))}); err != nil {
 			fmt.Println(err)
 		}
 	}

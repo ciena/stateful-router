@@ -104,9 +104,6 @@ func (i dbConnection) Unlock(ctx context.Context, request *db.UnlockRequest) (*e
 }
 
 func (i dbConnection) SetData(ctx context.Context, request *db.SetDataRequest) (*empty.Empty, error) {
-	fmt.Println("start SetData()")
-	defer fmt.Println("end SetData()")
-
 	device := i.getDevice(request.Device)
 
 	i.mutex.Lock()
@@ -121,8 +118,6 @@ func (i dbConnection) SetData(ctx context.Context, request *db.SetDataRequest) (
 }
 
 func (i dbConnection) GetData(ctx context.Context, request *db.GetDataRequest) (*db.GetDataResponse, error) {
-	fmt.Println("start GetData()")
-	defer fmt.Println("end GetData()")
 	device := i.getDevice(request.Device)
 
 	i.mutex.Lock()
