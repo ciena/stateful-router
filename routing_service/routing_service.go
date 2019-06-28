@@ -35,14 +35,13 @@ type node struct {
 	stateful.StatefulClient
 	peer.PeerClient
 	clientConn grpc.ClientConn
-	connected  bool // have I connected to them?
-	ready      bool // have they told me they're ready?
+	connected  bool // have I connected to this node
+	ready      bool // has this node informed me it's ready
 }
 
 type deviceData struct {
-	mutex           sync.RWMutex
-	lockedAndLoaded bool
-	lockId          uint64
+	mutex       sync.RWMutex
+	doneLoading chan struct{}
 }
 
 func NewRoutingService(ordinal uint32, ss stateful.StatefulServer) stateful.StatefulServer {
@@ -191,10 +190,11 @@ func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest)
 
 	go func() {
 		for deviceId, device := range devicesToMove {
+			// drain all in-progress requests
 			device.mutex.Lock()
 			fmt.Println("Unlocking device", deviceId)
 			ha.implementation.Unlock(context.Background(), //always run to completion
-				&stateful.UnlockRequest{Device: deviceId, LockId: device.lockId})
+				&stateful.UnlockRequest{Device: deviceId})
 
 			go ha.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
 
@@ -219,7 +219,7 @@ func (ha *routingService) Handoff(ctx context.Context, request *peer.HandoffRequ
 
 // stateful service interface impl
 
-func (ha *routingService) Lock(ctx context.Context, request *stateful.LockRequest) (*stateful.LockResponse, error) {
+func (ha *routingService) Lock(ctx context.Context, request *stateful.LockRequest) (*empty.Empty, error) {
 	panic("not implemented")
 }
 
@@ -238,14 +238,16 @@ type statefulAndPeer interface {
 func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndPeer, bool, error) {
 	ha.deviceMutex.RLock()
 	device, have := ha.devices[deviceId]
-	if have && device.lockedAndLoaded {
-		// if we have the device, just use it
+	// if we have the device loaded, just process the request locally
+	if have {
 		device.mutex.RLock()
 		ha.deviceMutex.RUnlock()
+		<-device.doneLoading
 		return device, nil, true, nil
 	}
 	ha.deviceMutex.RUnlock()
 
+	// build a list of possible nodes, including this one
 	possibleNodes := make(map[uint32]struct{})
 	ha.peerMutex.RLock()
 	if ha.ready {
@@ -262,35 +264,40 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 		return nil, nil, false, errors.New("no peers are ready to process this request")
 	}
 
+	// use the device ID to deterministically determine the best possible node
 	node := BestOf(deviceId, possibleNodes)
+	// if we aren't the best node
 	if node != ha.ordinal {
-		//send to peer
+		// send the request on to the best node
 		client := ha.peers[node]
 		ha.peerMutex.RUnlock()
 		fmt.Println("Forwarding request to node", node)
 		return nil, client, false, nil
 	}
-
 	ha.peerMutex.RUnlock()
+	// else, if this is the best node
 
-	if !have {
-		ha.deviceMutex.Lock()
-		device = &deviceData{}
+	ha.deviceMutex.Lock()
+	if device, have = ha.devices[deviceId]; !have {
+		device = &deviceData{
+			doneLoading: make(chan struct{}),
+		}
 		ha.devices[deviceId] = device
 		ha.deviceMutex.Unlock()
+	} else {
+		// some other thread loaded the device since we last checked
+		ha.deviceMutex.Unlock()
+		return ha.handlerFor(deviceId)
 	}
 
-	device.mutex.Lock()
 	fmt.Println("Locking device", deviceId)
-	response, err := ha.implementation.Lock(context.Background(), &stateful.LockRequest{Device: deviceId})
-	if err != nil {
-		device.mutex.Unlock()
+	// have the implementation lock & load the device
+	if _, err := ha.implementation.Lock(context.Background(), &stateful.LockRequest{Device: deviceId}); err != nil {
 		return nil, nil, false, err
 	}
-	device.lockedAndLoaded = true
-	device.lockId = response.LockId
-	device.mutex.Unlock()
+	close(device.doneLoading)
 
+	// after loading the device (which may take some time), restart routing
 	return ha.handlerFor(deviceId)
 }
 
@@ -302,7 +309,6 @@ func (ha *routingService) SetData(ctx context.Context, request *stateful.SetData
 	} else if useLocal {
 		defer device.mutex.RUnlock()
 
-		request.Lock = device.lockId
 		return ha.implementation.SetData(ctx, request)
 	} else {
 		return remoteHandler.SetData(ctx, request)
@@ -315,7 +321,6 @@ func (ha *routingService) GetData(ctx context.Context, request *stateful.GetData
 	} else if useLocal {
 		defer device.mutex.RUnlock()
 
-		request.Lock = device.lockId
 		return ha.implementation.GetData(ctx, request)
 	} else {
 		return remoteHandler.GetData(ctx, request)

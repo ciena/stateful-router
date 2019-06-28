@@ -15,7 +15,12 @@ type statefulService struct {
 	dbClient db.DBClient
 
 	mutex      sync.Mutex
-	localState map[uint64][]byte
+	localState map[uint64]*state
+}
+
+type state struct {
+	lock uint64
+	data []byte
 }
 
 func New() stateful.StatefulServer {
@@ -25,51 +30,51 @@ func New() stateful.StatefulServer {
 	}
 	ha := &statefulService{
 		dbClient:   db.NewDBClient(cc),
-		localState: make(map[uint64][]byte),
+		localState: make(map[uint64]*state),
 	}
 	return ha
 }
 
-func (ha *statefulService) Lock(ctx context.Context, request *stateful.LockRequest) (*stateful.LockResponse, error) {
+func (ha *statefulService) Lock(ctx context.Context, request *stateful.LockRequest) (*empty.Empty, error) {
 	// acquire lock
 	response, err := ha.dbClient.Lock(ctx, &db.LockRequest{Device: request.Device})
 	if err != nil {
-		return &stateful.LockResponse{}, err
+		return &empty.Empty{}, err
 	}
 
 	// load state from db
 	dataResponse, err := ha.dbClient.GetData(ctx, &db.GetDataRequest{Lock: response.LockId, Device: request.Device})
 	if err != nil {
-		return &stateful.LockResponse{}, err
+		return &empty.Empty{}, err
 	}
 	ha.mutex.Lock()
-	ha.localState[request.Device] = dataResponse.Data
+	ha.localState[request.Device] = &state{lock: response.LockId, data: dataResponse.Data}
 	ha.mutex.Unlock()
 
-	return &stateful.LockResponse{LockId: response.LockId}, nil
+	return &empty.Empty{}, nil
 }
 
 func (ha *statefulService) Unlock(ctx context.Context, request *stateful.UnlockRequest) (*empty.Empty, error) {
 	ha.mutex.Lock()
-	data := ha.localState[request.Device]
+	state := ha.localState[request.Device]
 	delete(ha.localState, request.Device)
 	ha.mutex.Unlock()
 
 	// flush data to db
-	ha.dbClient.SetData(ctx, &db.SetDataRequest{Lock: request.LockId, Device: request.Device, Data: data})
+	ha.dbClient.SetData(ctx, &db.SetDataRequest{Device: request.Device, Lock: state.lock, Data: state.data})
 
 	// release lock
-	return ha.dbClient.Unlock(ctx, &db.UnlockRequest{Device: request.Device, LockId: request.LockId})
+	return ha.dbClient.Unlock(ctx, &db.UnlockRequest{Device: request.Device, LockId: state.lock})
 }
 
 func (ha *statefulService) SetData(ctx context.Context, request *stateful.SetDataRequest) (*empty.Empty, error) {
 	// process, update local or db state as needed
 	ha.mutex.Lock()
 	if _, have := ha.localState[request.Device]; !have {
-		panic("device not loaded; this should not be possible")
+		panic("device not loaded; this should not be possible") // for demonstration purposes only
 	}
 
-	ha.localState[request.Device] = request.Data
+	ha.localState[request.Device].data = request.Data
 	ha.mutex.Unlock()
 
 	return &empty.Empty{}, nil
@@ -79,11 +84,10 @@ func (ha *statefulService) GetData(ctx context.Context, request *stateful.GetDat
 	ha.mutex.Lock()
 	defer ha.mutex.Unlock()
 
-	data, have := ha.localState[request.Device]
+	state, have := ha.localState[request.Device]
 	if !have {
-		// for demonstration purposes only
-		panic("device not loaded; this should not be possible")
+		panic("device not loaded; this should not be possible") // for demonstration purposes only
 	}
 
-	return &stateful.GetDataResponse{Data: data}, nil
+	return &stateful.GetDataResponse{Data: state.data}, nil
 }

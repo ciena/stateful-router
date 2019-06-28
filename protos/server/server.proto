@@ -5,7 +5,7 @@ import "google/protobuf/empty.proto";
 package stateful;
 
 service Stateful {
-  rpc Lock (LockRequest) returns (LockResponse) {}
+  rpc Lock (LockRequest) returns (google.protobuf.Empty) {}
   rpc Unlock (UnlockRequest) returns (google.protobuf.Empty) {}
   rpc SetData (SetDataRequest) returns (google.protobuf.Empty) {}
   rpc GetData (GetDataRequest) returns (GetDataResponse) {}
@@ -15,24 +15,17 @@ message LockRequest {
   uint64 device = 1;
 }
 
-message LockResponse {
-  uint64 lock_id = 1;
-}
-
 message UnlockRequest {
   uint64 device = 1;
-  uint64 lock_id = 2;
 }
 
 message SetDataRequest {
-  uint64 lock = 1;
-  uint64 device = 2;
-  bytes data = 3;
+  uint64 device = 1;
+  bytes data = 2;
 }
 
 message GetDataRequest {
-  uint64 lock = 1;
-  uint64 device = 2;
+  uint64 device = 1;
 }
 
 message GetDataResponse {
