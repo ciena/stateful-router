@@ -43,8 +43,9 @@ type node struct {
 }
 
 type deviceData struct {
-	mutex       sync.RWMutex
-	doneLoading chan struct{}
+	mutex        sync.RWMutex
+	loadingDone  chan struct{}
+	loadingError error
 }
 
 func NewRoutingService(ordinal uint32, ss stateful.StatefulServer) stateful.StatefulServer {
@@ -181,7 +182,6 @@ func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 				node.readiness = 0
 				ha.peerMutex.Unlock()
 			}
-
 		}
 	}
 	cc.Close()
@@ -230,15 +230,17 @@ func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest)
 	// migrate devices
 	for deviceId, device := range devicesToMove {
 		// ensure the device has actually finished loading
-		<-device.doneLoading
-		// wait for all in-progress requests to drain
-		device.mutex.Lock()
-		fmt.Println("Unlocking device", deviceId)
-		ha.implementation.Unlock(context.Background(), //always run to completion
-			&stateful.UnlockRequest{Device: deviceId})
+		<-device.loadingDone
+		if device.loadingError == nil {
+			// wait for all in-progress requests to drain
+			device.mutex.Lock()
+			fmt.Println("Unlocking device", deviceId)
+			ha.implementation.Unlock(context.Background(), //always run to completion
+				&stateful.UnlockRequest{Device: deviceId})
+			device.mutex.Unlock()
+		}
 
 		ha.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
-		device.mutex.Unlock()
 	}
 
 	return &peer.ReadyResponse{NextDeviceToMigrate: migrateNext}, nil
@@ -281,7 +283,11 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 	if have {
 		device.mutex.RLock()
 		ha.deviceMutex.RUnlock()
-		<-device.doneLoading
+		<-device.loadingDone
+		if device.loadingError != nil {
+			device.mutex.RUnlock()
+			return nil, nil, false, device.loadingError
+		}
 		return device, nil, true, nil
 	}
 	ha.deviceMutex.RUnlock()
@@ -319,7 +325,7 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 	ha.deviceMutex.Lock()
 	if device, have = ha.devices[deviceId]; !have {
 		device = &deviceData{
-			doneLoading: make(chan struct{}),
+			loadingDone: make(chan struct{}),
 		}
 		ha.devices[deviceId] = device
 		ha.deviceMutex.Unlock()
@@ -332,12 +338,23 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 	fmt.Println("Locking device", deviceId)
 	// have the implementation lock & load the device
 	if _, err := ha.implementation.Lock(context.Background(), &stateful.LockRequest{Device: deviceId}); err != nil {
-		return nil, nil, false, err
-	}
-	close(device.doneLoading)
+		// failed to load the device, release it
+		ha.deviceMutex.Lock()
+		if dev, have := ha.devices[deviceId]; have && dev == device {
+			delete(ha.devices, deviceId)
+		}
+		ha.deviceMutex.Unlock()
 
-	// after loading the device (which may take some time), restart routing
-	return ha.handlerFor(deviceId)
+		//inform any waiting threads that loading failed
+		device.loadingError = err
+		close(device.loadingDone)
+		return nil, nil, false, err
+	}else {
+		close(device.loadingDone)
+
+		// after loading the device, restart routing, as things may have changed in the time it took to load
+		return ha.handlerFor(deviceId)
+	}
 }
 
 // stateful service pass-through (forward to appropriate node, or process locally)
