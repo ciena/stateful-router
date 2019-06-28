@@ -7,6 +7,7 @@ import (
 	"github.com/khagerma/stateful-experiment/protos/server"
 	"google.golang.org/grpc"
 	"sync"
+	"time"
 )
 
 // stateful service implementation
@@ -51,6 +52,9 @@ func (ha *statefulService) Lock(ctx context.Context, request *stateful.LockReque
 	ha.localState[request.Device] = &state{lock: response.LockId, data: dataResponse.Data}
 	ha.mutex.Unlock()
 
+	// demonstrate time delay
+	time.Sleep(time.Second)
+
 	return &empty.Empty{}, nil
 }
 
@@ -59,6 +63,9 @@ func (ha *statefulService) Unlock(ctx context.Context, request *stateful.UnlockR
 	state := ha.localState[request.Device]
 	delete(ha.localState, request.Device)
 	ha.mutex.Unlock()
+
+	// demonstrate time delay
+	time.Sleep(time.Second)
 
 	// flush data to db
 	ha.dbClient.SetData(ctx, &db.SetDataRequest{Device: request.Device, Lock: state.lock, Data: state.data})

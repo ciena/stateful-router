@@ -6,7 +6,7 @@ package peer;
 
 service Peer {
   rpc Hello(HelloRequest) returns (google.protobuf.Empty) {}
-  rpc Ready(ReadyRequest) returns (google.protobuf.Empty) {}
+  rpc Ready(ReadyRequest) returns (ReadyResponse) {}
   rpc Handoff(HandoffRequest) returns (google.protobuf.Empty) {}
 }
 
@@ -16,8 +16,13 @@ message HelloRequest {
 
 message ReadyRequest {
   uint32 ordinal = 1;
+  uint64 readiness = 2;
+}
+
+message ReadyResponse {
+  uint64 next_device_to_migrate = 1;
 }
 
 message HandoffRequest {
-  uint64 device = 2;
+  uint64 device = 1;
 }

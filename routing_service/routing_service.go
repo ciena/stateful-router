@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/keepalive"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type routingService struct {
 
 	peerMutex sync.RWMutex
 	ready     bool
+	readiness uint64
 	peers     map[uint32]*node
 
 	deviceMutex sync.RWMutex
@@ -35,8 +37,9 @@ type node struct {
 	stateful.StatefulClient
 	peer.PeerClient
 	clientConn grpc.ClientConn
-	connected  bool // have I connected to this node
-	ready      bool // has this node informed me it's ready
+	connected  bool   // have I connected to this node
+	ready      bool   // has this node informed me it's ready
+	readiness  uint64 //which devices are ready
 }
 
 type deviceData struct {
@@ -78,19 +81,43 @@ func (ha *routingService) start() {
 }
 
 func (ha *routingService) makeReady() {
-	//assume all nodes that are up have connected
-	ha.peerMutex.Lock()
-	defer ha.peerMutex.Unlock()
+	fmt.Println("Ready - migrating devices")
+	readiness := uint64(0)
+	for {
 
-	fmt.Println("-- ready --")
-	ha.ready = true
+		ha.peerMutex.Lock()
+		// increment requests that we will accept locally
+		ha.ready = true
+		ha.readiness = readiness
 
-	// notify all nodes that we're up & ready
-	for _, con := range ha.peers {
-		if con.connected {
-			go con.Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal})
+		toNotify := make([]peer.PeerClient, 0, len(ha.peers))
+		for _, con := range ha.peers {
+			if con.connected {
+				toNotify = append(toNotify, con.PeerClient)
+			}
 		}
+		ha.peerMutex.Unlock()
+
+		// keep nodes informed on how ready we are
+		next := uint64(math.MaxUint64)
+		for _, client := range toNotify {
+			// inform peers that we're ready for devices
+			resp, err := client.Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal, Readiness: readiness})
+			if err == nil {
+				// determine which device is next in line for migration
+				if resp.NextDeviceToMigrate < next {
+					next = resp.NextDeviceToMigrate
+				}
+			}
+		}
+
+		//when we reach 100% readiness, we're done
+		if readiness == math.MaxUint64 {
+			break
+		}
+		readiness = next
 	}
+	fmt.Println("Done migrating")
 }
 
 func addressFromOrdinal(ordinal uint32) string {
@@ -102,7 +129,7 @@ func (ha *routingService) connect(ordinal uint32) {
 	defer ha.peerMutex.Unlock()
 
 	if _, have := ha.peers[ordinal]; !have {
-		fmt.Println("connecting to", ordinal)
+		fmt.Println("Connecting to node", ordinal)
 		cc, err := grpc.Dial(addressFromOrdinal(ordinal), grpc.WithInsecure(), grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: maxBackoff}))
 		if err != nil {
 			panic(err)
@@ -132,10 +159,10 @@ func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 
 			if err == nil {
 				ha.peerMutex.RLock()
-				ready := ha.ready
+				readiness := ha.readiness
 				ha.peerMutex.RUnlock()
-				if ready {
-					peer.NewPeerClient(cc).Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal})
+				if readiness != 0 {
+					peer.NewPeerClient(cc).Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal, Readiness: readiness})
 				}
 			}
 		} else if lastState == connectivity.Ready {
@@ -151,6 +178,7 @@ func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 				node := ha.peers[ordinal]
 				node.connected = false
 				node.ready = false
+				node.readiness = 0
 				ha.peerMutex.Unlock()
 			}
 
@@ -168,41 +196,52 @@ func (ha *routingService) Hello(ctx context.Context, request *peer.HelloRequest)
 	return &empty.Empty{}, nil
 }
 
-func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest) (*empty.Empty, error) {
-	fmt.Println("Node", request.Ordinal, "declared ready")
+func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest) (*peer.ReadyResponse, error) {
+	fmt.Println("Node", request.Ordinal, "declared ready up to device", request.Readiness)
 	ha.peerMutex.Lock()
-	ha.peers[request.Ordinal].ready = true
+	node := ha.peers[request.Ordinal]
+	node.ready = true
+	node.readiness = request.Readiness
 	ha.peerMutex.Unlock()
 
 	ha.deviceMutex.Lock()
-	defer ha.deviceMutex.Unlock()
-
 	devicesToMove := make(map[uint64]*deviceData)
+	//for every device that belongs on the other node
+	migrateNext := uint64(math.MaxUint64)
 	for deviceId, device := range ha.devices {
 		//for every device that belongs on the other node
 		if BestNode(deviceId, ha.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
-			fmt.Println("will migrate device", deviceId)
-			//release and notify that it's moved
-			devicesToMove[deviceId] = device
-			delete(ha.devices, deviceId)
+			// if the other node is ready for this device
+			if deviceId <= request.Readiness {
+				fmt.Println("will migrate device", deviceId)
+				//release and notify that it's moved
+				devicesToMove[deviceId] = device
+				delete(ha.devices, deviceId)
+			} else {
+				// if the other node is not ready for the device, consider it for the next move
+				if deviceId < migrateNext {
+					migrateNext = deviceId
+				}
+			}
 		}
 	}
+	ha.deviceMutex.Unlock()
 
-	go func() {
-		for deviceId, device := range devicesToMove {
-			// drain all in-progress requests
-			device.mutex.Lock()
-			fmt.Println("Unlocking device", deviceId)
-			ha.implementation.Unlock(context.Background(), //always run to completion
-				&stateful.UnlockRequest{Device: deviceId})
+	// migrate devices
+	for deviceId, device := range devicesToMove {
+		// ensure the device has actually finished loading
+		<-device.doneLoading
+		// wait for all in-progress requests to drain
+		device.mutex.Lock()
+		fmt.Println("Unlocking device", deviceId)
+		ha.implementation.Unlock(context.Background(), //always run to completion
+			&stateful.UnlockRequest{Device: deviceId})
 
-			go ha.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
+		ha.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
+		device.mutex.Unlock()
+	}
 
-			device.mutex.Unlock()
-		}
-	}()
-
-	return &empty.Empty{}, nil
+	return &peer.ReadyResponse{NextDeviceToMigrate: migrateNext}, nil
 }
 
 // Handoff is just a hint to load a device, so we'll do normal loading/locking
@@ -250,11 +289,11 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 	// build a list of possible nodes, including this one
 	possibleNodes := make(map[uint32]struct{})
 	ha.peerMutex.RLock()
-	if ha.ready {
+	if ha.ready && ha.readiness >= deviceId {
 		possibleNodes[ha.ordinal] = struct{}{}
 	}
 	for nodeId, node := range ha.peers {
-		if node.connected && node.ready {
+		if node.connected && node.ready && node.readiness >= deviceId {
 			possibleNodes[nodeId] = struct{}{}
 		}
 	}

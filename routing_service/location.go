@@ -1,12 +1,10 @@
 package routing
 
-import "fmt"
-
 func GetLocationArray(id uint64, highestKnownOrdinal uint32) []uint32 {
 	array := []uint32{0}
 	for i := uint32(1); i <= highestKnownOrdinal; i++ {
 		pos := id % uint64(i+1)
-		id /= uint64(i+1)
+		id /= uint64(i + 1)
 		array = append(array[:pos], append([]uint32{i}, array[pos:]...)...)
 	}
 	return array
@@ -19,7 +17,7 @@ func GetLocationArrayWithNodes(id uint64, ordinal uint32, nodes map[uint32]struc
 			highest = node
 		}
 	}
-	 return GetLocationArray(id, highest)
+	return GetLocationArray(id, highest)
 }
 
 func BestNode(id uint64, ordinal uint32, nodes map[uint32]struct{}) uint32 {
@@ -30,7 +28,6 @@ func BestNode(id uint64, ordinal uint32, nodes map[uint32]struct{}) uint32 {
 		}
 	}
 	array := GetLocationArray(id, highest)
-	fmt.Println(array)
 	for {
 		if _, have := nodes[array[0]]; have || array[0] == ordinal {
 			return array[0]
