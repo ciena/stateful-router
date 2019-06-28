@@ -1,0 +1,5 @@
+# project-specific
+.idea/
+
+# ignore development folders
+vendor/*/*

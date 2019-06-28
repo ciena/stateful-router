@@ -12,9 +12,30 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
+
+var peerDNSFormat string
+var listenAddress string
+
+func init() {
+	var have bool
+	listenAddress, have = os.LookupEnv("LISTEN_ADDRESS")
+	if !have {
+		panic("env var LISTEN_ADDRESS not defined")
+	}
+	peerDNSFormat, have = os.LookupEnv("PEER_DNS_FORMAT")
+	if !have {
+		panic("env var PEER_DNS_FORMAT not specified")
+	}
+}
+
+func addressFromOrdinal(ordinal uint32) string {
+
+	return fmt.Sprintf(peerDNSFormat, ordinal)
+}
 
 const maxBackoff = time.Second * 4
 const waitReadyTime = time.Second * 5
@@ -68,7 +89,7 @@ func (ha *routingService) start() {
 	//wait a bit, for connections to be established
 	time.AfterFunc(waitReadyTime, ha.makeReady)
 
-	lis, err := net.Listen("tcp", addressFromOrdinal(ha.ordinal))
+	lis, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
@@ -121,17 +142,14 @@ func (ha *routingService) makeReady() {
 	fmt.Println("Done migrating")
 }
 
-func addressFromOrdinal(ordinal uint32) string {
-	return fmt.Sprintf("localhost:%d", 6000+ordinal)
-}
-
 func (ha *routingService) connect(ordinal uint32) {
 	ha.peerMutex.Lock()
 	defer ha.peerMutex.Unlock()
 
 	if _, have := ha.peers[ordinal]; !have {
-		fmt.Println("Connecting to node", ordinal)
-		cc, err := grpc.Dial(addressFromOrdinal(ordinal), grpc.WithInsecure(), grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: maxBackoff}))
+		addr := addressFromOrdinal(ordinal)
+		fmt.Println("Connecting to node", ordinal, "at", addr)
+		cc, err := grpc.Dial(addr, grpc.WithInsecure(), grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: maxBackoff}))
 		if err != nil {
 			panic(err)
 		}
@@ -349,7 +367,7 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 		device.loadingError = err
 		close(device.loadingDone)
 		return nil, nil, false, err
-	}else {
+	} else {
 		close(device.loadingDone)
 
 		// after loading the device, restart routing, as things may have changed in the time it took to load

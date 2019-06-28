@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -16,7 +17,12 @@ import (
 var maxTime = time.Unix(1<<63-62135596801, 999999999)
 
 func main() {
-	lis, err := net.Listen("tcp", "localhost:2345")
+	addr, have:=os.LookupEnv("LISTEN_ADDRESS")
+	if !have{
+		panic("env var LISTEN_ADDRESS not defined")
+	}
+
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
@@ -24,7 +30,7 @@ func main() {
 	db.RegisterDBServer(s, &dbConnection{
 		devices: make(map[uint64]*deviceData),
 	})
-	fmt.Println("Listening on localhost:2345...")
+	fmt.Println("Listening on", addr)
 	if err := s.Serve(lis); err != nil {
 		panic(fmt.Sprintf("failed to serve: %v", err))
 	}

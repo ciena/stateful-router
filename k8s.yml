@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: stateful-experiment
+  labels:
+    app: stateful-experiment
+spec:
+  ports:
+  - name: grpc
+    port: 2350
+  clusterIP: None
+  selector:
+    app: stateful-experiment
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stateful-experiment
+spec:
+  selector:
+    matchLabels:
+      app: stateful-experiment # has to match .spec.template.metadata.labels
+  serviceName: stateful-experiment
+  replicas: 3
+  podManagementPolicy: Parallel
+  template:
+    metadata:
+      labels:
+        app: stateful-experiment # has to match .spec.selector.matchLabels
+    spec:
+      containers:
+      - name: stateful-experiment
+        image: stateful-experiment:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PEER_DNS_FORMAT
+          value: "stateful-experiment-%d.stateful-experiment.voltha.svc.cluster.local:2350"
+        - name: LISTEN_ADDRESS
+          value: ":2350"
+        ports:
+        - name: grpc
+          containerPort: 2350
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dummy-db
+  labels:
+    app: dummy-db
+spec:
+  ports:
+  - name: grpc
+    port: 2345
+  selector:
+    app: dummy-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dummy-db
+  labels:
+    app: dummy-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dummy-db
+  template:
+    metadata:
+      labels:
+        app: dummy-db
+    spec:
+      containers:
+      - name: dummy-db
+        image: dummy-db:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 2345
