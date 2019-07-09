@@ -292,7 +292,7 @@ type statefulAndPeer interface {
 }
 
 // handlerFor returns a processor for the given device,
-// to either handles the request locally,
+// to either handle the request locally,
 // or forward it on to the appropriate peer
 func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndPeer, bool, error) {
 	ha.deviceMutex.RLock()

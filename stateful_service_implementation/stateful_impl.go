@@ -6,6 +6,7 @@ import (
 	"github.com/khagerma/stateful-experiment/protos/db"
 	"github.com/khagerma/stateful-experiment/protos/server"
 	"google.golang.org/grpc"
+	"os"
 	"sync"
 	"time"
 )
@@ -25,7 +26,12 @@ type state struct {
 }
 
 func New() stateful.StatefulServer {
-	cc, err := grpc.Dial("localhost:2345", grpc.WithInsecure())
+	addr, have:=os.LookupEnv("DUMMY_DB_ADDRESS")
+	if !have{
+		panic("env var DUMMY_DB_ADDRESS not set")
+	}
+
+	cc, err := grpc.Dial(addr, grpc.WithInsecure())
 	if err != nil {
 		panic(err)
 	}

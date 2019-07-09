@@ -1,9 +1,19 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: stateful-experiment
-  labels:
+  name: stateful-experiment-api
+spec:
+  ports:
+  - name: grpc
+    port: 2350
+  selector:
     app: stateful-experiment
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stateful-experiment
 spec:
   ports:
   - name: grpc
@@ -11,7 +21,6 @@ spec:
   clusterIP: None
   selector:
     app: stateful-experiment
-
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -20,20 +29,32 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: stateful-experiment # has to match .spec.template.metadata.labels
+      app: stateful-experiment # must match .spec.template.metadata.labels
   serviceName: stateful-experiment
   replicas: 3
   podManagementPolicy: Parallel
   template:
     metadata:
       labels:
-        app: stateful-experiment # has to match .spec.selector.matchLabels
+        app: stateful-experiment # must match .spec.selector.matchLabels
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: "kubernetes.io/hostname"
+            labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - stateful-experiment
       containers:
       - name: stateful-experiment
         image: stateful-experiment:latest
         imagePullPolicy: IfNotPresent
         env:
+        - name: DUMMY_DB_ADDRESS
+          value: "dummy-db.voltha.svc.cluster.local:2345"
         - name: PEER_DNS_FORMAT
           value: "stateful-experiment-%d.stateful-experiment.voltha.svc.cluster.local:2350"
         - name: LISTEN_ADDRESS
@@ -47,8 +68,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: dummy-db
-  labels:
-    app: dummy-db
 spec:
   ports:
   - name: grpc
@@ -60,8 +79,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: dummy-db
-  labels:
-    app: dummy-db
 spec:
   replicas: 1
   selector:
@@ -76,5 +93,8 @@ spec:
       - name: dummy-db
         image: dummy-db:latest
         imagePullPolicy: IfNotPresent
+        env:
+          - name: LISTEN_ADDRESS
+            value: ":2345"
         ports:
         - containerPort: 2345
