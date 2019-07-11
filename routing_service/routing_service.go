@@ -32,13 +32,14 @@ func init() {
 	}
 }
 
-func addressFromOrdinal(ordinal uint32) string {
+const (
+	keepaliveTime        = time.Second * 10
+	keepaliveTimeout     = time.Second * 5
+	connectionMaxBackoff = time.Second * 5
+	dnsPropagationDelay  = time.Second * 30
 
-	return fmt.Sprintf(peerDNSFormat, ordinal)
-}
-
-const maxBackoff = time.Second * 4
-const waitReadyTime = time.Second * 5
+	waitReadyTime = connectionMaxBackoff*2 + dnsPropagationDelay
+)
 
 type routingService struct {
 	ordinal uint32
@@ -81,50 +82,56 @@ func NewRoutingService(ordinal uint32, ss stateful.StatefulServer) stateful.Stat
 	return ha
 }
 
-func (ha *routingService) start() {
-	for i := uint32(0); i < ha.ordinal; i++ {
-		ha.connect(i)
+func (router *routingService) start() {
+	for i := uint32(0); i < router.ordinal; i++ {
+		router.connect(i)
 	}
 
-	//wait a bit, for connections to be established
-	time.AfterFunc(waitReadyTime, ha.makeReady)
+	time.AfterFunc(waitReadyTime, router.makeReady)
 
 	lis, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 
-	s := grpc.NewServer(grpc.KeepaliveParams(keepalive.ServerParameters{Time: time.Second * 2, Timeout: time.Second * 2}))
-	stateful.RegisterStatefulServer(s, ha)
-	peer.RegisterPeerServer(s, ha)
+	s := grpc.NewServer(grpc.KeepaliveParams(
+		keepalive.ServerParameters{
+			Time:    keepaliveTime,
+			Timeout: keepaliveTimeout,
+		}), grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+		MinTime:             keepaliveTime / 2,
+		PermitWithoutStream: true,
+	}))
+	stateful.RegisterStatefulServer(s, router)
+	peer.RegisterPeerServer(s, router)
 	if err := s.Serve(lis); err != nil {
 		panic(fmt.Sprintf("failed to serve: %v", err))
 	}
 }
 
-func (ha *routingService) makeReady() {
+func (router *routingService) makeReady() {
 	fmt.Println("Ready - migrating devices")
 	readiness := uint64(0)
 	for {
 
-		ha.peerMutex.Lock()
+		router.peerMutex.Lock()
 		// increment requests that we will accept locally
-		ha.ready = true
-		ha.readiness = readiness
+		router.ready = true
+		router.readiness = readiness
 
-		toNotify := make([]peer.PeerClient, 0, len(ha.peers))
-		for _, con := range ha.peers {
+		toNotify := make([]peer.PeerClient, 0, len(router.peers))
+		for _, con := range router.peers {
 			if con.connected {
 				toNotify = append(toNotify, con.PeerClient)
 			}
 		}
-		ha.peerMutex.Unlock()
+		router.peerMutex.Unlock()
 
 		// keep nodes informed on how ready we are
 		next := uint64(math.MaxUint64)
 		for _, client := range toNotify {
 			// inform peers that we're ready for devices
-			resp, err := client.Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal, Readiness: readiness})
+			resp, err := client.Ready(context.Background(), &peer.ReadyRequest{Ordinal: router.ordinal, Readiness: readiness})
 			if err == nil {
 				// determine which device is next in line for migration
 				if resp.NextDeviceToMigrate < next {
@@ -142,63 +149,78 @@ func (ha *routingService) makeReady() {
 	fmt.Println("Done migrating")
 }
 
-func (ha *routingService) connect(ordinal uint32) {
-	ha.peerMutex.Lock()
-	defer ha.peerMutex.Unlock()
+func (router *routingService) connect(ordinal uint32) {
+	router.peerMutex.Lock()
+	defer router.peerMutex.Unlock()
 
-	if _, have := ha.peers[ordinal]; !have {
-		addr := addressFromOrdinal(ordinal)
+	if _, have := router.peers[ordinal]; !have {
+		addr := fmt.Sprintf(peerDNSFormat, ordinal)
 		fmt.Println("Connecting to node", ordinal, "at", addr)
-		cc, err := grpc.Dial(addr, grpc.WithInsecure(), grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: maxBackoff}))
+		cc, err := grpc.Dial(addr,
+			grpc.WithInsecure(),
+			grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: connectionMaxBackoff}),
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                keepaliveTime,
+				Timeout:             keepaliveTimeout,
+				PermitWithoutStream: true,
+			}))
 		if err != nil {
 			panic(err)
 		}
 
-		ha.peers[ordinal] = &node{
+		router.peers[ordinal] = &node{
 			StatefulClient: stateful.NewStatefulClient(cc),
 			PeerClient:     peer.NewPeerClient(cc),
 		}
 
-		go ha.watchState(cc, ordinal)
+		go router.watchState(cc, ordinal)
 	}
 }
 
-func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
+func (router *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 	state := connectivity.Connecting
+	connectedAtLeastOnce := false
 	for cc.WaitForStateChange(context.Background(), state) {
 		lastState := state
 		state = cc.GetState()
 
 		if state == connectivity.Ready {
-			ha.peerMutex.Lock()
-			ha.peers[ordinal].connected = true
-			ha.peerMutex.Unlock()
+			if !connectedAtLeastOnce {
+				connectedAtLeastOnce = true
+				fmt.Println("Connected to node", ordinal)
+			} else {
+				fmt.Println("Reconnected to node", ordinal)
+			}
 
-			_, err := peer.NewPeerClient(cc).Hello(context.Background(), &peer.HelloRequest{Ordinal: ha.ordinal})
+			router.peerMutex.Lock()
+			router.peers[ordinal].connected = true
+			router.peerMutex.Unlock()
+
+			_, err := peer.NewPeerClient(cc).Hello(context.Background(), &peer.HelloRequest{Ordinal: router.ordinal})
 
 			if err == nil {
-				ha.peerMutex.RLock()
-				readiness := ha.readiness
-				ha.peerMutex.RUnlock()
+				router.peerMutex.RLock()
+				readiness := router.readiness
+				router.peerMutex.RUnlock()
 				if readiness != 0 {
-					peer.NewPeerClient(cc).Ready(context.Background(), &peer.ReadyRequest{Ordinal: ha.ordinal, Readiness: readiness})
+					peer.NewPeerClient(cc).Ready(context.Background(), &peer.ReadyRequest{Ordinal: router.ordinal, Readiness: readiness})
 				}
 			}
 		} else if lastState == connectivity.Ready {
 			// if the disconnected node has a greater ordinal than this one, just drop the connection
 			fmt.Println("Connection to node", ordinal, "lost")
-			ha.peerMutex.Lock()
-			if ordinal > ha.ordinal {
-				delete(ha.peers, ordinal)
-				ha.peerMutex.Unlock()
+			router.peerMutex.Lock()
+			if ordinal > router.ordinal {
+				delete(router.peers, ordinal)
+				router.peerMutex.Unlock()
 				break
 
 			} else {
-				node := ha.peers[ordinal]
+				node := router.peers[ordinal]
 				node.connected = false
 				node.ready = false
 				node.readiness = 0
-				ha.peerMutex.Unlock()
+				router.peerMutex.Unlock()
 			}
 		}
 	}
@@ -209,32 +231,32 @@ func (ha *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 
 // peer interface impl
 
-func (ha *routingService) Hello(ctx context.Context, request *peer.HelloRequest) (*empty.Empty, error) {
-	ha.connect(request.Ordinal)
+func (router *routingService) Hello(ctx context.Context, request *peer.HelloRequest) (*empty.Empty, error) {
+	router.connect(request.Ordinal)
 	return &empty.Empty{}, nil
 }
 
-func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest) (*peer.ReadyResponse, error) {
+func (router *routingService) Ready(ctx context.Context, request *peer.ReadyRequest) (*peer.ReadyResponse, error) {
 	fmt.Println("Node", request.Ordinal, "declared ready up to device", request.Readiness)
-	ha.peerMutex.Lock()
-	node := ha.peers[request.Ordinal]
+	router.peerMutex.Lock()
+	node := router.peers[request.Ordinal]
 	node.ready = true
 	node.readiness = request.Readiness
-	ha.peerMutex.Unlock()
+	router.peerMutex.Unlock()
 
-	ha.deviceMutex.Lock()
+	router.deviceMutex.Lock()
 	devicesToMove := make(map[uint64]*deviceData)
 	//for every device that belongs on the other node
 	migrateNext := uint64(math.MaxUint64)
-	for deviceId, device := range ha.devices {
+	for deviceId, device := range router.devices {
 		//for every device that belongs on the other node
-		if BestNode(deviceId, ha.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
+		if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
 			// if the other node is ready for this device
 			if deviceId <= request.Readiness {
 				fmt.Println("will migrate device", deviceId)
 				//release and notify that it's moved
 				devicesToMove[deviceId] = device
-				delete(ha.devices, deviceId)
+				delete(router.devices, deviceId)
 			} else {
 				// if the other node is not ready for the device, consider it for the next move
 				if deviceId < migrateNext {
@@ -243,7 +265,7 @@ func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest)
 			}
 		}
 	}
-	ha.deviceMutex.Unlock()
+	router.deviceMutex.Unlock()
 
 	// migrate devices
 	for deviceId, device := range devicesToMove {
@@ -253,20 +275,20 @@ func (ha *routingService) Ready(ctx context.Context, request *peer.ReadyRequest)
 			// wait for all in-progress requests to drain
 			device.mutex.Lock()
 			fmt.Println("Unlocking device", deviceId)
-			ha.implementation.Unlock(context.Background(), //always run to completion
+			router.implementation.Unlock(context.Background(), //always run to completion
 				&stateful.UnlockRequest{Device: deviceId})
 			device.mutex.Unlock()
 		}
 
-		ha.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
+		router.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
 	}
 
 	return &peer.ReadyResponse{NextDeviceToMigrate: migrateNext}, nil
 }
 
 // Handoff is just a hint to load a device, so we'll do normal loading/locking
-func (ha *routingService) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
-	if device, remoteHandler, useLocal, err := ha.handlerFor(request.Device); err != nil {
+func (router *routingService) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
+	if device, remoteHandler, useLocal, err := router.handlerFor(request.Device); err != nil {
 		return &empty.Empty{}, err
 	} else if useLocal {
 		defer device.mutex.RUnlock()
@@ -278,11 +300,11 @@ func (ha *routingService) Handoff(ctx context.Context, request *peer.HandoffRequ
 
 // stateful service interface impl
 
-func (ha *routingService) Lock(ctx context.Context, request *stateful.LockRequest) (*empty.Empty, error) {
+func (router *routingService) Lock(ctx context.Context, request *stateful.LockRequest) (*empty.Empty, error) {
 	panic("not implemented")
 }
 
-func (ha *routingService) Unlock(_ context.Context, request *stateful.UnlockRequest) (*empty.Empty, error) {
+func (router *routingService) Unlock(_ context.Context, request *stateful.UnlockRequest) (*empty.Empty, error) {
 	panic("not implemented")
 }
 
@@ -294,13 +316,12 @@ type statefulAndPeer interface {
 // handlerFor returns a processor for the given device,
 // to either handle the request locally,
 // or forward it on to the appropriate peer
-func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndPeer, bool, error) {
-	ha.deviceMutex.RLock()
-	device, have := ha.devices[deviceId]
+func (router *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndPeer, bool, error) {
+	router.deviceMutex.RLock()
 	// if we have the device loaded, just process the request locally
-	if have {
+	if device, have := router.devices[deviceId]; have {
 		device.mutex.RLock()
-		ha.deviceMutex.RUnlock()
+		router.deviceMutex.RUnlock()
 		<-device.loadingDone
 		if device.loadingError != nil {
 			device.mutex.RUnlock()
@@ -308,60 +329,59 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 		}
 		return device, nil, true, nil
 	}
-	ha.deviceMutex.RUnlock()
+	router.deviceMutex.RUnlock()
 
 	// build a list of possible nodes, including this one
 	possibleNodes := make(map[uint32]struct{})
-	ha.peerMutex.RLock()
-	if ha.ready && ha.readiness >= deviceId {
-		possibleNodes[ha.ordinal] = struct{}{}
+	router.peerMutex.RLock()
+	if router.ready && router.readiness >= deviceId {
+		possibleNodes[router.ordinal] = struct{}{}
 	}
-	for nodeId, node := range ha.peers {
+	for nodeId, node := range router.peers {
 		if node.connected && node.ready && node.readiness >= deviceId {
 			possibleNodes[nodeId] = struct{}{}
 		}
 	}
 
 	if len(possibleNodes) == 0 {
-		ha.peerMutex.RUnlock()
+		router.peerMutex.RUnlock()
 		return nil, nil, false, errors.New("no peers are ready to process this request")
 	}
 
 	// use the device ID to deterministically determine the best possible node
 	node := BestOf(deviceId, possibleNodes)
 	// if we aren't the best node
-	if node != ha.ordinal {
+	if node != router.ordinal {
 		// send the request on to the best node
-		client := ha.peers[node]
-		ha.peerMutex.RUnlock()
+		client := router.peers[node]
+		router.peerMutex.RUnlock()
 		fmt.Println("Forwarding request to node", node)
 		return nil, client, false, nil
 	}
-	ha.peerMutex.RUnlock()
+	router.peerMutex.RUnlock()
 	// else, if this is the best node
 
-	ha.deviceMutex.Lock()
-	if device, have = ha.devices[deviceId]; !have {
-		device = &deviceData{
-			loadingDone: make(chan struct{}),
-		}
-		ha.devices[deviceId] = device
-		ha.deviceMutex.Unlock()
-	} else {
+	router.deviceMutex.Lock()
+	if _, have := router.devices[deviceId]; have {
 		// some other thread loaded the device since we last checked
-		ha.deviceMutex.Unlock()
-		return ha.handlerFor(deviceId)
+		router.deviceMutex.Unlock()
+		return router.handlerFor(deviceId)
 	}
+	device := &deviceData{
+		loadingDone: make(chan struct{}),
+	}
+	router.devices[deviceId] = device
+	router.deviceMutex.Unlock()
 
 	fmt.Println("Locking device", deviceId)
 	// have the implementation lock & load the device
-	if _, err := ha.implementation.Lock(context.Background(), &stateful.LockRequest{Device: deviceId}); err != nil {
+	if _, err := router.implementation.Lock(context.Background(), &stateful.LockRequest{Device: deviceId}); err != nil {
 		// failed to load the device, release it
-		ha.deviceMutex.Lock()
-		if dev, have := ha.devices[deviceId]; have && dev == device {
-			delete(ha.devices, deviceId)
+		router.deviceMutex.Lock()
+		if dev, have := router.devices[deviceId]; have && dev == device {
+			delete(router.devices, deviceId)
 		}
-		ha.deviceMutex.Unlock()
+		router.deviceMutex.Unlock()
 
 		//inform any waiting threads that loading failed
 		device.loadingError = err
@@ -371,31 +391,31 @@ func (ha *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndP
 		close(device.loadingDone)
 
 		// after loading the device, restart routing, as things may have changed in the time it took to load
-		return ha.handlerFor(deviceId)
+		return router.handlerFor(deviceId)
 	}
 }
 
 // stateful service pass-through (forward to appropriate node, or process locally)
 
-func (ha *routingService) SetData(ctx context.Context, request *stateful.SetDataRequest) (*empty.Empty, error) {
-	if device, remoteHandler, useLocal, err := ha.handlerFor(request.Device); err != nil {
+func (router *routingService) SetData(ctx context.Context, request *stateful.SetDataRequest) (*empty.Empty, error) {
+	if device, remoteHandler, useLocal, err := router.handlerFor(request.Device); err != nil {
 		return &empty.Empty{}, err
 	} else if useLocal {
 		defer device.mutex.RUnlock()
 
-		return ha.implementation.SetData(ctx, request)
+		return router.implementation.SetData(ctx, request)
 	} else {
 		return remoteHandler.SetData(ctx, request)
 	}
 }
 
-func (ha *routingService) GetData(ctx context.Context, request *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
-	if device, remoteHandler, useLocal, err := ha.handlerFor(request.Device); err != nil {
+func (router *routingService) GetData(ctx context.Context, request *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
+	if device, remoteHandler, useLocal, err := router.handlerFor(request.Device); err != nil {
 		return &stateful.GetDataResponse{}, err
 	} else if useLocal {
 		defer device.mutex.RUnlock()
 
-		return ha.implementation.GetData(ctx, request)
+		return router.implementation.GetData(ctx, request)
 	} else {
 		return remoteHandler.GetData(ctx, request)
 	}

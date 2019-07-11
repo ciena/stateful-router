@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/khagerma/stateful-experiment/protos/server"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"os"
 	"regexp"
 	"strconv"
@@ -14,7 +15,15 @@ import (
 )
 
 func main() {
-	cc, err := grpc.Dial("stateful-experiment-api.voltha.svc.cluster.local:2350", grpc.WithBlock(), grpc.WithInsecure(), grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: time.Second * 5}))
+	cc, err := grpc.Dial("stateful-experiment-api.voltha.svc.cluster.local:2350",
+		grpc.WithBlock(),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                time.Second * 10,
+			Timeout:             time.Second * 5,
+			PermitWithoutStream: true,
+		}),
+		grpc.WithInsecure(),
+		grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: time.Second * 5}))
 	if err != nil {
 		panic(err)
 	}
@@ -42,8 +51,11 @@ func cli(client stateful.StatefulClient) {
 		}
 
 		if array[1] == "set" {
-			client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))})
-			fmt.Println("> OK")
+			if client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))}); err != nil {
+				fmt.Println(">", err)
+			} else {
+				fmt.Println("> OK")
+			}
 		} else if array[1] == "get" {
 			resp, err := client.GetData(context.Background(), &stateful.GetDataRequest{Device: deviceId})
 			if err != nil {

@@ -41,8 +41,6 @@ func main() {
 
 	client := routing.NewRoutingService(uint32(ordinal), stateful_service.New())
 
-	client = client
-
 	//go sendDummyRequests(client, uint32(ordinal))
 
 	go cli(client)
@@ -84,8 +82,11 @@ func cli(client stateful.StatefulServer) {
 		}
 
 		if array[1] == "set" {
-			client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))})
-			fmt.Println("> OK")
+			if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))}); err != nil {
+				fmt.Println(">", err)
+			} else {
+				fmt.Println("> OK")
+			}
 		} else if array[1] == "get" {
 			resp, err := client.GetData(context.Background(), &stateful.GetDataRequest{Device: deviceId})
 			if err != nil {
