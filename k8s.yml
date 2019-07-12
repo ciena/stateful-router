@@ -19,6 +19,7 @@ spec:
   - name: grpc
     port: 2350
   clusterIP: None
+  publishNotReadyAddresses: true
   selector:
     app: stateful-experiment
 ---
@@ -62,6 +63,16 @@ spec:
         ports:
         - name: grpc
           containerPort: 2350
+        - name: readiness
+          containerPort: 2351
+        readinessProbe:
+          tcpSocket:
+            port: 2351
+          initialDelaySeconds: 0
+          timeoutSeconds: 1
+          periodSeconds: 5
+          successThreshold: 1
+          failureThreshold: 1
 
 ---
 apiVersion: v1

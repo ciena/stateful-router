@@ -155,7 +155,6 @@ func (router *routingService) connect(ordinal uint32) {
 
 	if _, have := router.peers[ordinal]; !have {
 		addr := fmt.Sprintf(peerDNSFormat, ordinal)
-		fmt.Println("Connecting to node", ordinal, "at", addr)
 		cc, err := grpc.Dial(addr,
 			grpc.WithInsecure(),
 			grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: connectionMaxBackoff}),
