@@ -287,14 +287,14 @@ func (router *routingService) Ready(ctx context.Context, request *peer.ReadyRequ
 
 // Handoff is just a hint to load a device, so we'll do normal loading/locking
 func (router *routingService) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
-	if device, remoteHandler, useLocal, err := router.handlerFor(request.Device); err != nil {
+	if device, remoteHandler, forward, err := router.handlerFor(request.Device); err != nil {
 		return &empty.Empty{}, err
-	} else if useLocal {
-		defer device.mutex.RUnlock()
+	} else if forward {
+		return remoteHandler.Handoff(ctx, request)
 	} else {
-		remoteHandler.Handoff(ctx, request)
+		defer device.mutex.RUnlock()
+		return &empty.Empty{}, nil
 	}
-	return &empty.Empty{}, nil
 }
 
 // stateful service interface impl
@@ -326,7 +326,7 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 			device.mutex.RUnlock()
 			return nil, nil, false, device.loadingError
 		}
-		return device, nil, true, nil
+		return device, nil, false, nil
 	}
 	router.deviceMutex.RUnlock()
 
@@ -355,7 +355,7 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 		client := router.peers[node]
 		router.peerMutex.RUnlock()
 		fmt.Println("Forwarding request to node", node)
-		return nil, client, false, nil
+		return nil, client, true, nil
 	}
 	router.peerMutex.RUnlock()
 	// else, if this is the best node
@@ -397,25 +397,25 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 // stateful service pass-through (forward to appropriate node, or process locally)
 
 func (router *routingService) SetData(ctx context.Context, request *stateful.SetDataRequest) (*empty.Empty, error) {
-	if device, remoteHandler, useLocal, err := router.handlerFor(request.Device); err != nil {
+	if device, remoteHandler, forward, err := router.handlerFor(request.Device); err != nil {
 		return &empty.Empty{}, err
-	} else if useLocal {
-		defer device.mutex.RUnlock()
-
-		return router.implementation.SetData(ctx, request)
-	} else {
+	} else if forward {
 		return remoteHandler.SetData(ctx, request)
+	} else {
+		defer device.mutex.RUnlock()
 	}
+
+	return router.implementation.SetData(ctx, request)
 }
 
 func (router *routingService) GetData(ctx context.Context, request *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
-	if device, remoteHandler, useLocal, err := router.handlerFor(request.Device); err != nil {
+	if device, remoteHandler, forward, err := router.handlerFor(request.Device); err != nil {
 		return &stateful.GetDataResponse{}, err
-	} else if useLocal {
-		defer device.mutex.RUnlock()
-
-		return router.implementation.GetData(ctx, request)
-	} else {
+	} else if forward {
 		return remoteHandler.GetData(ctx, request)
+	} else {
+		defer device.mutex.RUnlock()
 	}
+
+	return router.implementation.GetData(ctx, request)
 }
