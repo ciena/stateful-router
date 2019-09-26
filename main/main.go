@@ -18,6 +18,10 @@ import (
 
 func main() {
 
+	for i := uint64(0); i < 16; i++ {
+		fmt.Printf("%d: %v\n", i, routing.GetLocationArray(i, 2))
+	}
+
 	ordinalEnv, have := os.LookupEnv("ORDINAL")
 	if !have {
 		hostname, err := os.Hostname()

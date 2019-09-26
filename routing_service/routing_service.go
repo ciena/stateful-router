@@ -36,7 +36,7 @@ const (
 	keepaliveTime        = time.Second * 10
 	keepaliveTimeout     = time.Second * 5
 	connectionMaxBackoff = time.Second * 5
-	dnsPropagationDelay  = time.Second * 30
+	dnsPropagationDelay  = time.Second * 0 //30
 
 	waitReadyTime = connectionMaxBackoff*2 + dnsPropagationDelay
 )
@@ -52,6 +52,9 @@ type routingService struct {
 	deviceMutex sync.RWMutex
 	devices     map[uint64]*deviceData
 
+	eventMutex sync.Mutex
+	eventData  eventData
+
 	implementation stateful.StatefulServer
 }
 
@@ -61,7 +64,8 @@ type node struct {
 	clientConn grpc.ClientConn
 	connected  bool   // have I connected to this node
 	ready      bool   // has this node informed me it's ready
-	readiness  uint64 //which devices are ready
+	readiness  uint64 // which devices are ready
+	devices    uint32 // number of devices this node is handling
 }
 
 type deviceData struct {
@@ -88,6 +92,7 @@ func (router *routingService) start() {
 	}
 
 	time.AfterFunc(waitReadyTime, router.makeReady)
+	go router.startEventHandler()
 
 	lis, err := net.Listen("tcp", listenAddress)
 	if err != nil {
@@ -110,43 +115,9 @@ func (router *routingService) start() {
 }
 
 func (router *routingService) makeReady() {
-	fmt.Println("Ready - migrating devices")
-	readiness := uint64(0)
-	for {
-
-		router.peerMutex.Lock()
-		// increment requests that we will accept locally
-		router.ready = true
-		router.readiness = readiness
-
-		toNotify := make([]peer.PeerClient, 0, len(router.peers))
-		for _, con := range router.peers {
-			if con.connected {
-				toNotify = append(toNotify, con.PeerClient)
-			}
-		}
-		router.peerMutex.Unlock()
-
-		// keep nodes informed on how ready we are
-		next := uint64(math.MaxUint64)
-		for _, client := range toNotify {
-			// inform peers that we're ready for devices
-			resp, err := client.Ready(context.Background(), &peer.ReadyRequest{Ordinal: router.ordinal, Readiness: readiness})
-			if err == nil {
-				// determine which device is next in line for migration
-				if resp.NextDeviceToMigrate < next {
-					next = resp.NextDeviceToMigrate
-				}
-			}
-		}
-
-		//when we reach 100% readiness, we're done
-		if readiness == math.MaxUint64 {
-			break
-		}
-		readiness = next
-	}
-	fmt.Println("Done migrating")
+	fmt.Println("makeReady called")
+	router.ready = true
+	router.recalculateReadiness()
 }
 
 func (router *routingService) connect(ordinal uint32) {
@@ -192,25 +163,18 @@ func (router *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 			}
 
 			router.peerMutex.Lock()
-			router.peers[ordinal].connected = true
+			node := router.peers[ordinal]
+			node.connected = true
+			router.peerConnected(node)
 			router.peerMutex.Unlock()
 
-			_, err := peer.NewPeerClient(cc).Hello(context.Background(), &peer.HelloRequest{Ordinal: router.ordinal})
-
-			if err == nil {
-				router.peerMutex.RLock()
-				readiness := router.readiness
-				router.peerMutex.RUnlock()
-				if readiness != 0 {
-					peer.NewPeerClient(cc).Ready(context.Background(), &peer.ReadyRequest{Ordinal: router.ordinal, Readiness: readiness})
-				}
-			}
 		} else if lastState == connectivity.Ready {
 			// if the disconnected node has a greater ordinal than this one, just drop the connection
 			fmt.Println("Connection to node", ordinal, "lost")
 			router.peerMutex.Lock()
 			if ordinal > router.ordinal {
 				delete(router.peers, ordinal)
+				router.recalculateReadiness()
 				router.peerMutex.Unlock()
 				break
 
@@ -219,6 +183,8 @@ func (router *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 				node.connected = false
 				node.ready = false
 				node.readiness = 0
+				node.devices = 0
+				router.recalculateReadiness()
 				router.peerMutex.Unlock()
 			}
 		}
@@ -235,18 +201,55 @@ func (router *routingService) Hello(ctx context.Context, request *peer.HelloRequ
 	return &empty.Empty{}, nil
 }
 
-func (router *routingService) Ready(ctx context.Context, request *peer.ReadyRequest) (*peer.ReadyResponse, error) {
+func (router *routingService) UpdateStats(ctx context.Context, request *peer.StatsRequest) (*empty.Empty, error) {
+	router.peerMutex.RLock()
+	defer router.peerMutex.RUnlock()
+
+	node := router.peers[request.Ordinal]
+	node.devices = request.Devices
+	router.recalculateReadiness()
+	return &empty.Empty{}, nil
+}
+
+func (router *routingService) NextDevice(ctx context.Context, request *peer.NextDeviceRequest) (*peer.NextDeviceResponse, error) {
+	router.deviceMutex.RLock()
+	defer router.deviceMutex.RUnlock()
+
+	migrateNext := uint64(math.MaxUint64)
+	found := false
+	first, isOnlyDeviceToMigrate := true, false
+	for deviceId := range router.devices {
+		// for every device that belongs on the other node
+		if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
+			// find the lowest device that's > other.readiness
+			if deviceId > request.Readiness {
+				found = true
+				if first {
+					first = false
+					isOnlyDeviceToMigrate = true
+				} else {
+					isOnlyDeviceToMigrate = false
+				}
+				if deviceId < migrateNext {
+					migrateNext = deviceId
+				}
+			}
+		}
+	}
+	return &peer.NextDeviceResponse{Has: found, Device: migrateNext, Last: isOnlyDeviceToMigrate}, nil
+}
+
+func (router *routingService) UpdateReadiness(ctx context.Context, request *peer.ReadinessRequest) (*empty.Empty, error) {
 	fmt.Println("Node", request.Ordinal, "declared ready up to device", request.Readiness)
 	router.peerMutex.Lock()
 	node := router.peers[request.Ordinal]
+	recalculateReadiness := !node.ready || node.readiness != request.Readiness
 	node.ready = true
 	node.readiness = request.Readiness
 	router.peerMutex.Unlock()
 
 	router.deviceMutex.Lock()
 	devicesToMove := make(map[uint64]*deviceData)
-	//for every device that belongs on the other node
-	migrateNext := uint64(math.MaxUint64)
 	for deviceId, device := range router.devices {
 		//for every device that belongs on the other node
 		if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
@@ -256,33 +259,37 @@ func (router *routingService) Ready(ctx context.Context, request *peer.ReadyRequ
 				//release and notify that it's moved
 				devicesToMove[deviceId] = device
 				delete(router.devices, deviceId)
-			} else {
-				// if the other node is not ready for the device, consider it for the next move
-				if deviceId < migrateNext {
-					migrateNext = deviceId
-				}
+				router.deviceCountChanged()
 			}
 		}
 	}
 	router.deviceMutex.Unlock()
 
-	// migrate devices
-	for deviceId, device := range devicesToMove {
-		// ensure the device has actually finished loading
-		<-device.loadingDone
-		if device.loadingError == nil {
-			// wait for all in-progress requests to drain
-			device.mutex.Lock()
-			fmt.Println("Unlocking device", deviceId)
-			router.implementation.Unlock(context.Background(), //always run to completion
-				&stateful.UnlockRequest{Device: deviceId})
-			device.mutex.Unlock()
-		}
-
-		router.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
+	if recalculateReadiness {
+		router.recalculateReadiness()
 	}
 
-	return &peer.ReadyResponse{NextDeviceToMigrate: migrateNext}, nil
+	// migrate devices
+	for deviceId, device := range devicesToMove {
+		router.migrateDevice(deviceId, device)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+func (router *routingService) migrateDevice(deviceId uint64, device *deviceData) {
+	// ensure the device has actually finished loading
+	<-device.loadingDone
+	if device.loadingError == nil {
+		// wait for all in-progress requests to drain
+		device.mutex.Lock()
+		fmt.Println("Unlocking device", deviceId)
+		router.implementation.Unlock(context.Background(), //always run to completion
+			&stateful.UnlockRequest{Device: deviceId})
+		device.mutex.Unlock()
+	}
+
+	router.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
 }
 
 // Handoff is just a hint to load a device, so we'll do normal loading/locking
@@ -312,6 +319,29 @@ type statefulAndPeer interface {
 	peer.PeerClient
 }
 
+// bestOfUnsafe returns which node this request should be routed to
+// this takes into account node reachability & readiness
+// router.peerMutex is assumed to be held by the caller
+func (router *routingService) bestOfUnsafe(deviceId uint64) (uint32, error) {
+	// build a list of possible nodes, including this one
+	possibleNodes := make(map[uint32]struct{})
+	if router.ready && router.readiness >= deviceId {
+		possibleNodes[router.ordinal] = struct{}{}
+	}
+	for nodeId, node := range router.peers {
+		if node.connected && node.ready && node.readiness >= deviceId {
+			possibleNodes[nodeId] = struct{}{}
+		}
+	}
+
+	if len(possibleNodes) == 0 {
+		return 0, errors.New("no peers are ready to process this request")
+	}
+
+	// use the device ID to deterministically determine the best possible node
+	return BestOf(deviceId, possibleNodes), nil
+}
+
 // handlerFor returns a processor for the given device,
 // to either handle the request locally,
 // or forward it on to the appropriate peer
@@ -330,25 +360,13 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 	}
 	router.deviceMutex.RUnlock()
 
-	// build a list of possible nodes, including this one
-	possibleNodes := make(map[uint32]struct{})
 	router.peerMutex.RLock()
-	if router.ready && router.readiness >= deviceId {
-		possibleNodes[router.ordinal] = struct{}{}
-	}
-	for nodeId, node := range router.peers {
-		if node.connected && node.ready && node.readiness >= deviceId {
-			possibleNodes[nodeId] = struct{}{}
-		}
-	}
-
-	if len(possibleNodes) == 0 {
-		router.peerMutex.RUnlock()
-		return nil, nil, false, errors.New("no peers are ready to process this request")
-	}
-
 	// use the device ID to deterministically determine the best possible node
-	node := BestOf(deviceId, possibleNodes)
+	node, err := router.bestOfUnsafe(deviceId)
+	if err != nil {
+		router.peerMutex.RUnlock()
+		return nil, nil, false, err
+	}
 	// if we aren't the best node
 	if node != router.ordinal {
 		// send the request on to the best node
@@ -369,7 +387,9 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 	device := &deviceData{
 		loadingDone: make(chan struct{}),
 	}
+	device.mutex.RLock()
 	router.devices[deviceId] = device
+	router.deviceCountChanged()
 	router.deviceMutex.Unlock()
 
 	fmt.Println("Locking device", deviceId)
@@ -379,9 +399,11 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 		router.deviceMutex.Lock()
 		if dev, have := router.devices[deviceId]; have && dev == device {
 			delete(router.devices, deviceId)
+			router.deviceCountChanged()
 		}
 		router.deviceMutex.Unlock()
 
+		device.mutex.RUnlock()
 		//inform any waiting threads that loading failed
 		device.loadingError = err
 		close(device.loadingDone)
@@ -389,8 +411,8 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 	} else {
 		close(device.loadingDone)
 
-		// after loading the device, restart routing, as things may have changed in the time it took to load
-		return router.handlerFor(deviceId)
+		// since we pre-RLocked this device, we already own it
+		return device, nil, false, nil
 	}
 }
 

@@ -5,22 +5,36 @@ import "google/protobuf/empty.proto";
 package peer;
 
 service Peer {
-  rpc Hello(HelloRequest) returns (google.protobuf.Empty) {}
-  rpc Ready(ReadyRequest) returns (ReadyResponse) {}
-  rpc Handoff(HandoffRequest) returns (google.protobuf.Empty) {}
+  rpc Hello (HelloRequest) returns (google.protobuf.Empty) {}
+  rpc NextDevice (NextDeviceRequest) returns (NextDeviceResponse) {}
+  rpc UpdateReadiness (ReadinessRequest) returns (google.protobuf.Empty) {}
+  rpc UpdateStats (StatsRequest) returns (google.protobuf.Empty) {}
+  rpc Handoff (HandoffRequest) returns (google.protobuf.Empty) {}
 }
 
 message HelloRequest {
   uint32 ordinal = 1;
 }
 
-message ReadyRequest {
+message NextDeviceRequest {
   uint32 ordinal = 1;
   uint64 readiness = 2;
 }
 
-message ReadyResponse {
-  uint64 next_device_to_migrate = 1;
+message NextDeviceResponse {
+  bool has = 1;
+  bool last = 2;
+  uint64 device = 3;
+}
+
+message ReadinessRequest {
+  uint32 ordinal = 1;
+  uint64 readiness = 2;
+}
+
+message StatsRequest {
+  uint32 ordinal = 1;
+  uint32 devices = 2;
 }
 
 message HandoffRequest {
