@@ -16,6 +16,21 @@ import (
 	"time"
 )
 
+var peerDNSFormat string
+var listenAddress string
+
+func init() {
+	var have bool
+	listenAddress, have = os.LookupEnv("LISTEN_ADDRESS")
+	if !have {
+		panic("env var LISTEN_ADDRESS not defined")
+	}
+	peerDNSFormat, have = os.LookupEnv("PEER_DNS_FORMAT")
+	if !have {
+		panic("env var PEER_DNS_FORMAT not specified")
+	}
+}
+
 func main() {
 
 	for i := uint64(0); i < 16; i++ {
@@ -43,7 +58,7 @@ func main() {
 
 	fmt.Println("ordinal:", ordinal)
 
-	client := routing.NewRoutingService(uint32(ordinal), stateful_service.New())
+	client := routing.NewRoutingService(listenAddress, peerDNSFormat, uint32(ordinal), stateful_service.New())
 
 	//go sendDummyRequests(client, uint32(ordinal))
 

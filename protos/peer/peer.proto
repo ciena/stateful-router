@@ -33,10 +33,12 @@ message ReadinessRequest {
 }
 
 message StatsRequest {
-  uint32 ordinal = 1;
-  uint32 devices = 2;
+  map<uint32, uint32> deviceCounts = 1;
 }
 
 message HandoffRequest {
   uint64 device = 1;
+
+  uint32 ordinal = 2;
+  uint32 devices = 3;
 }

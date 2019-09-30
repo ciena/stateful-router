@@ -12,25 +12,9 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"math"
 	"net"
-	"os"
 	"sync"
 	"time"
 )
-
-var peerDNSFormat string
-var listenAddress string
-
-func init() {
-	var have bool
-	listenAddress, have = os.LookupEnv("LISTEN_ADDRESS")
-	if !have {
-		panic("env var LISTEN_ADDRESS not defined")
-	}
-	peerDNSFormat, have = os.LookupEnv("PEER_DNS_FORMAT")
-	if !have {
-		panic("env var PEER_DNS_FORMAT not specified")
-	}
-}
 
 const (
 	keepaliveTime        = time.Second * 10
@@ -42,7 +26,8 @@ const (
 )
 
 type routingService struct {
-	ordinal uint32
+	ordinal       uint32
+	peerDNSFormat string
 
 	peerMutex sync.RWMutex
 	ready     bool
@@ -52,8 +37,9 @@ type routingService struct {
 	deviceMutex sync.RWMutex
 	devices     map[uint64]*deviceData
 
-	eventMutex sync.Mutex
-	eventData  eventData
+	eventMutex           sync.Mutex
+	deviceCountEventData deviceCountEventData
+	rebalanceEventData   rebalanceEventData
 
 	implementation stateful.StatefulServer
 }
@@ -74,27 +60,36 @@ type deviceData struct {
 	loadingError error
 }
 
-func NewRoutingService(ordinal uint32, ss stateful.StatefulServer) stateful.StatefulServer {
+func NewRoutingService(address, peerDNSFormat string, ordinal uint32, ss stateful.StatefulServer) stateful.StatefulServer {
 	ha := &routingService{
-		ordinal:        ordinal,
-		peers:          make(map[uint32]*node),
-		devices:        make(map[uint64]*deviceData),
+		ordinal:       ordinal,
+		peerDNSFormat: peerDNSFormat,
+		peers:         make(map[uint32]*node),
+		devices:       make(map[uint64]*deviceData),
+		deviceCountEventData: deviceCountEventData{
+			updateComplete: make(chan struct{}),
+			updatingPeers:  make(map[uint32]uint32),
+		},
+		rebalanceEventData: rebalanceEventData{
+			newPeers: make(map[peer.PeerClient]struct{}),
+		},
 		implementation: ss,
 	}
 
-	go ha.start()
+	go ha.start(address)
 	return ha
 }
 
-func (router *routingService) start() {
+func (router *routingService) start(address string) {
 	for i := uint32(0); i < router.ordinal; i++ {
 		router.connect(i)
 	}
 
 	time.AfterFunc(waitReadyTime, router.makeReady)
-	go router.startEventHandler()
+	go router.startStatsNotifier()
+	go router.startRebalancer()
 
-	lis, err := net.Listen("tcp", listenAddress)
+	lis, err := net.Listen("tcp", address)
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
@@ -125,7 +120,7 @@ func (router *routingService) connect(ordinal uint32) {
 	defer router.peerMutex.Unlock()
 
 	if _, have := router.peers[ordinal]; !have {
-		addr := fmt.Sprintf(peerDNSFormat, ordinal)
+		addr := fmt.Sprintf(router.peerDNSFormat, ordinal)
 		cc, err := grpc.Dial(addr,
 			grpc.WithInsecure(),
 			grpc.WithBackoffConfig(grpc.BackoffConfig{MaxDelay: connectionMaxBackoff}),
@@ -205,8 +200,11 @@ func (router *routingService) UpdateStats(ctx context.Context, request *peer.Sta
 	router.peerMutex.RLock()
 	defer router.peerMutex.RUnlock()
 
-	node := router.peers[request.Ordinal]
-	node.devices = request.Devices
+	for ordinal, devices := range request.DeviceCounts {
+		if node, have := router.peers[ordinal]; have {
+			node.devices = devices
+		}
+	}
 	router.recalculateReadiness()
 	return &empty.Empty{}, nil
 }
@@ -249,35 +247,42 @@ func (router *routingService) UpdateReadiness(ctx context.Context, request *peer
 	router.peerMutex.Unlock()
 
 	router.deviceMutex.Lock()
+	originalDeviceCount := uint32(len(router.devices))
 	devicesToMove := make(map[uint64]*deviceData)
 	for deviceId, device := range router.devices {
 		//for every device that belongs on the other node
 		if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
 			// if the other node is ready for this device
 			if deviceId <= request.Readiness {
-				fmt.Println("will migrate device", deviceId)
 				//release and notify that it's moved
 				devicesToMove[deviceId] = device
 				delete(router.devices, deviceId)
-				router.deviceCountChanged()
 			}
 		}
 	}
 	router.deviceMutex.Unlock()
 
+	router.migrateDevices(devicesToMove, originalDeviceCount)
+
 	if recalculateReadiness {
 		router.recalculateReadiness()
-	}
-
-	// migrate devices
-	for deviceId, device := range devicesToMove {
-		router.migrateDevice(deviceId, device)
 	}
 
 	return &empty.Empty{}, nil
 }
 
-func (router *routingService) migrateDevice(deviceId uint64, device *deviceData) {
+func (router *routingService) migrateDevices(devicesToMove map[uint64]*deviceData, originalDeviceCount uint32) {
+	if len(devicesToMove) != 0 {
+		var ctr uint32
+		for deviceId, device := range devicesToMove {
+			ctr++
+			router.migrateDevice(deviceId, device, originalDeviceCount-ctr)
+		}
+		router.deviceCountChanged()
+	}
+}
+
+func (router *routingService) migrateDevice(deviceId uint64, device *deviceData, devices uint32) {
 	// ensure the device has actually finished loading
 	<-device.loadingDone
 	if device.loadingError == nil {
@@ -289,17 +294,23 @@ func (router *routingService) migrateDevice(deviceId uint64, device *deviceData)
 		device.mutex.Unlock()
 	}
 
-	router.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId})
+	router.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId, Ordinal: router.ordinal, Devices: devices})
 }
 
 // Handoff is just a hint to load a device, so we'll do normal loading/locking
 func (router *routingService) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
-	if device, remoteHandler, forward, err := router.handlerFor(request.Device); err != nil {
+	var peerUpdateComplete chan struct{}
+	if device, remoteHandler, forward, err := router.handlerForInternal(request.Device, func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
 		return remoteHandler.Handoff(ctx, request)
 	} else {
-		defer device.mutex.RUnlock()
+		device.mutex.RUnlock()
+		if peerUpdateComplete != nil {
+			fmt.Println("-- start wait")
+			<-peerUpdateComplete
+			fmt.Println("-- end wait")
+		}
 		return &empty.Empty{}, nil
 	}
 }
@@ -346,6 +357,10 @@ func (router *routingService) bestOfUnsafe(deviceId uint64) (uint32, error) {
 // to either handle the request locally,
 // or forward it on to the appropriate peer
 func (router *routingService) handlerFor(deviceId uint64) (*deviceData, statefulAndPeer, bool, error) {
+	return router.handlerForInternal(deviceId, router.deviceCountChanged)
+}
+
+func (router *routingService) handlerForInternal(deviceId uint64, deviceCountChangedCallback func()) (*deviceData, statefulAndPeer, bool, error) {
 	router.deviceMutex.RLock()
 	// if we have the device loaded, just process the request locally
 	if device, have := router.devices[deviceId]; have {
@@ -389,7 +404,7 @@ func (router *routingService) handlerFor(deviceId uint64) (*deviceData, stateful
 	}
 	device.mutex.RLock()
 	router.devices[deviceId] = device
-	router.deviceCountChanged()
+	deviceCountChangedCallback()
 	router.deviceMutex.Unlock()
 
 	fmt.Println("Locking device", deviceId)
