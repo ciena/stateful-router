@@ -12,18 +12,44 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
 
-const (
+var (
 	keepaliveTime        = time.Second * 10
 	keepaliveTimeout     = time.Second * 5
 	connectionMaxBackoff = time.Second * 5
-	dnsPropagationDelay  = time.Second * 0 //30
+	dnsPropagationDelay  = time.Second * 30
 
-	waitReadyTime = connectionMaxBackoff*2 + dnsPropagationDelay
+	waitReadyTime time.Duration
 )
+
+func init() {
+	var err error
+	if v, have := os.LookupEnv("ROUTING_KEEPALIVE_TIME"); have {
+		if keepaliveTime, err = time.ParseDuration(v); err != nil {
+			panic(err)
+		}
+	}
+	if v, have := os.LookupEnv("ROUTING_KEEPALIVE_TIMEOUT"); have {
+		if keepaliveTimeout, err = time.ParseDuration(v); err != nil {
+			panic(err)
+		}
+	}
+	if v, have := os.LookupEnv("ROUTING_CONNECTION_MAX_BACKOFF"); have {
+		if connectionMaxBackoff, err = time.ParseDuration(v); err != nil {
+			panic(err)
+		}
+	}
+	if v, have := os.LookupEnv("ROUTING_DNS_PROPAGATION_DELAY"); have {
+		if dnsPropagationDelay, err = time.ParseDuration(v); err != nil {
+			panic(err)
+		}
+	}
+	waitReadyTime = connectionMaxBackoff*2 + dnsPropagationDelay
+}
 
 type routingService struct {
 	ordinal       uint32

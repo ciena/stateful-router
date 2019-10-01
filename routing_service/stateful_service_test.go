@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+const assumePropagationDelay = time.Millisecond * 50
+
+func init() {
+	//since everything is local, assume connectivity is established within 1s
+	waitReadyTime = time.Second
+}
+
 // the device w/ UUID 0 is a special case
 func TestRoutingServiceDevice0(t *testing.T) {
 	ss, clients := setup(3)
@@ -105,11 +112,13 @@ func TestRoutingServiceParallelAdd(t *testing.T) {
 	ss, clients := setup(totalNodes)
 	defer teardown(clients)
 
+	// create devices
 	for i := 0; i < totalDevices; i++ {
-		// create device
-		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32()) | uint64(i)<<32
-		setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
+		go func() {
+			randomClient := rand.Intn(len(clients))
+			deviceId := uint64(rand.Uint32()) | uint64(i)<<32
+			setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
+		}()
 	}
 
 	if err := ss.waitForMigrationToStabilize(t); err != nil {
@@ -150,7 +159,7 @@ func TestRoutingServiceManyNodes(t *testing.T) {
 	}
 }
 
-func TestRoutingServiceAddNode(t *testing.T) {
+func TestRoutingServiceAddNodes(t *testing.T) {
 	totalDevices := 100
 	initialNodes := 1
 	finalNodes := 7
@@ -168,7 +177,7 @@ func TestRoutingServiceAddNode(t *testing.T) {
 		// add a client
 		clients = append(clients, NewRoutingService(fmt.Sprintf("localhost:5%03d", len(clients)), "localhost:5%03d", uint32(len(clients)), &dummyStatefulServerProxy{ss: ss}).(*routingService))
 
-		time.Sleep(waitReadyTime + time.Second)
+		time.Sleep(waitReadyTime + assumePropagationDelay)
 
 		if err := ss.waitForMigrationToStabilize(t); err != nil {
 			t.Error(err)
@@ -194,7 +203,7 @@ func setup(nodes int) (*dummyStatefulServer, []*routingService) {
 	}
 
 	// wait for clients to connect to each other
-	time.Sleep(waitReadyTime + time.Second)
+	time.Sleep(waitReadyTime + assumePropagationDelay)
 
 	return ss, clients
 }
@@ -217,11 +226,11 @@ func setDeviceData(t *testing.T, clients []*routingService, client int, device u
 func (ss *dummyStatefulServer) waitForMigrationToStabilize(t *testing.T) error {
 	// if there are no changes
 	now := time.Now()
-	for startTime, lastRequestTime := now, now; now.Before(lastRequestTime.Add(time.Millisecond * 30)); now = time.Now() {
+	for startTime, lastRequestTime := now, now; now.Before(lastRequestTime.Add(assumePropagationDelay)); now = time.Now() {
 		if now.After(startTime.Add(time.Second * 2)) {
 			return errors.New("output failed to stabilize")
 		}
-		time.Sleep(lastRequestTime.Add(time.Millisecond * 30).Sub(now))
+		time.Sleep(lastRequestTime.Add(assumePropagationDelay).Sub(now))
 
 		ss.mutex.Lock()
 		lastRequestTime = ss.lastRequestTime
