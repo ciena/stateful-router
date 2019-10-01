@@ -29,6 +29,10 @@ type routingService struct {
 	ordinal       uint32
 	peerDNSFormat string
 
+	server        *grpc.Server
+	ctx           context.Context
+	ctxCancelFunc context.CancelFunc
+
 	peerMutex sync.RWMutex
 	ready     bool
 	readiness uint64
@@ -37,9 +41,11 @@ type routingService struct {
 	deviceMutex sync.RWMutex
 	devices     map[uint64]*deviceData
 
-	eventMutex           sync.Mutex
-	deviceCountEventData deviceCountEventData
-	rebalanceEventData   rebalanceEventData
+	eventMutex                  sync.Mutex
+	deviceCountEventData        deviceCountEventData
+	deviceCountEventHandlerDone chan struct{}
+	rebalanceEventData          rebalanceEventData
+	rebalanceEventHandlerDone   chan struct{}
 
 	implementation stateful.StatefulServer
 }
@@ -61,9 +67,12 @@ type deviceData struct {
 }
 
 func NewRoutingService(address, peerDNSFormat string, ordinal uint32, ss stateful.StatefulServer) stateful.StatefulServer {
-	ha := &routingService{
+	ctx, ctxCancelFunc := context.WithCancel(context.Background())
+	router := &routingService{
 		ordinal:       ordinal,
 		peerDNSFormat: peerDNSFormat,
+		ctx:           ctx,
+		ctxCancelFunc: ctxCancelFunc,
 		peers:         make(map[uint32]*node),
 		devices:       make(map[uint64]*deviceData),
 		deviceCountEventData: deviceCountEventData{
@@ -73,14 +82,11 @@ func NewRoutingService(address, peerDNSFormat string, ordinal uint32, ss statefu
 		rebalanceEventData: rebalanceEventData{
 			newPeers: make(map[peer.PeerClient]struct{}),
 		},
-		implementation: ss,
+		deviceCountEventHandlerDone: make(chan struct{}),
+		rebalanceEventHandlerDone:   make(chan struct{}),
+		implementation:              ss,
 	}
 
-	go ha.start(address)
-	return ha
-}
-
-func (router *routingService) start(address string) {
 	for i := uint32(0); i < router.ordinal; i++ {
 		router.connect(i)
 	}
@@ -89,12 +95,12 @@ func (router *routingService) start(address string) {
 	go router.startStatsNotifier()
 	go router.startRebalancer()
 
-	lis, err := net.Listen("tcp", address)
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
 
-	s := grpc.NewServer(grpc.KeepaliveParams(
+	router.server = grpc.NewServer(grpc.KeepaliveParams(
 		keepalive.ServerParameters{
 			Time:    keepaliveTime,
 			Timeout: keepaliveTimeout,
@@ -102,11 +108,24 @@ func (router *routingService) start(address string) {
 		MinTime:             keepaliveTime / 2,
 		PermitWithoutStream: true,
 	}))
-	stateful.RegisterStatefulServer(s, router)
-	peer.RegisterPeerServer(s, router)
-	if err := s.Serve(lis); err != nil {
+
+	go router.start(listener)
+	return router
+}
+
+func (router *routingService) start(lis net.Listener) {
+	stateful.RegisterStatefulServer(router.server, router)
+	peer.RegisterPeerServer(router.server, router)
+	if err := router.server.Serve(lis); err != nil {
 		panic(fmt.Sprintf("failed to serve: %v", err))
 	}
+}
+
+func (router *routingService) Stop() {
+	router.server.Stop()
+	router.ctxCancelFunc()
+	<-router.rebalanceEventHandlerDone
+	<-router.deviceCountEventHandlerDone
 }
 
 func (router *routingService) makeReady() {
@@ -145,7 +164,7 @@ func (router *routingService) connect(ordinal uint32) {
 func (router *routingService) watchState(cc *grpc.ClientConn, ordinal uint32) {
 	state := connectivity.Connecting
 	connectedAtLeastOnce := false
-	for cc.WaitForStateChange(context.Background(), state) {
+	for cc.WaitForStateChange(router.ctx, state) {
 		lastState := state
 		state = cc.GetState()
 
@@ -240,10 +259,12 @@ func (router *routingService) NextDevice(ctx context.Context, request *peer.Next
 func (router *routingService) UpdateReadiness(ctx context.Context, request *peer.ReadinessRequest) (*empty.Empty, error) {
 	fmt.Println("Node", request.Ordinal, "declared ready up to device", request.Readiness)
 	router.peerMutex.Lock()
-	node := router.peers[request.Ordinal]
-	recalculateReadiness := !node.ready || node.readiness != request.Readiness
-	node.ready = true
-	node.readiness = request.Readiness
+	recalculateReadiness := false
+	if node, have := router.peers[request.Ordinal]; have {
+		recalculateReadiness = !node.ready || node.readiness != request.Readiness
+		node.ready = true
+		node.readiness = request.Readiness
+	}
 	router.peerMutex.Unlock()
 
 	router.deviceMutex.Lock()
@@ -297,7 +318,7 @@ func (router *routingService) migrateDevice(deviceId uint64, device *deviceData,
 	router.Handoff(context.Background(), &peer.HandoffRequest{Device: deviceId, Ordinal: router.ordinal, Devices: devices})
 }
 
-// Handoff is just a hint to load a device, so we'll do normal loading/locking
+// Handoff is just basically hint to load a device, so we'll do normal loading/locking
 func (router *routingService) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
 	var peerUpdateComplete chan struct{}
 	if device, remoteHandler, forward, err := router.handlerForInternal(request.Device, func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
@@ -307,9 +328,10 @@ func (router *routingService) Handoff(ctx context.Context, request *peer.Handoff
 	} else {
 		device.mutex.RUnlock()
 		if peerUpdateComplete != nil {
-			fmt.Println("-- start wait")
-			<-peerUpdateComplete
-			fmt.Println("-- end wait")
+			select {
+			case <-peerUpdateComplete:
+			case <-ctx.Done():
+			}
 		}
 		return &empty.Empty{}, nil
 	}

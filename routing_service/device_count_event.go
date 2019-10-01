@@ -55,6 +55,7 @@ func (router *routingService) deviceCountPeerChanged(nodeId uint32, devices uint
 }
 
 func (router *routingService) startStatsNotifier() {
+	defer close(router.deviceCountEventHandlerDone)
 	for {
 		router.eventMutex.Lock()
 		ch := make(chan struct{})
@@ -97,6 +98,10 @@ func (router *routingService) startStatsNotifier() {
 		close(data.updateComplete)
 
 		select {
+		case <-router.ctx.Done():
+			// anyone waiting for us can exit
+			close(router.deviceCountEventData.updateComplete)
+			return
 		case <-ch: // on event, repeat
 		}
 	}
