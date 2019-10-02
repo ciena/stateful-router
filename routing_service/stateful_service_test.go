@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-const assumePropagationDelay = time.Millisecond * 50
+const assumePropagationDelay = time.Millisecond * 30
+const assumeStabilizationDelay = time.Millisecond * 100
 
 func init() {
 	//since everything is local, assume connectivity is established within 1s
@@ -41,7 +42,7 @@ func TestRoutingServiceDevice0(t *testing.T) {
 }
 
 func TestRoutingServiceDeviceMAX(t *testing.T) {
-	ss, clients := setup(3)
+	ss, clients := setup(5)
 	defer teardown(clients)
 
 	// create device w/ UUID 0
@@ -67,7 +68,7 @@ func TestRoutingServiceSingleCore(t *testing.T) {
 	for i := 1; i <= totalDevices; i++ {
 		// create device
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32()) | uint64(i)<<32
+		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
 		setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
 
 		if err := ss.waitForMigrationToStabilize(t); err != nil {
@@ -91,7 +92,7 @@ func TestRoutingServiceSerializedAdd(t *testing.T) {
 	for i := 1; i <= totalDevices; i++ {
 		// create device
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32()) | uint64(i)<<32
+		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
 		setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
 
 		if err := ss.waitForMigrationToStabilize(t); err != nil {
@@ -114,11 +115,9 @@ func TestRoutingServiceParallelAdd(t *testing.T) {
 
 	// create devices
 	for i := 0; i < totalDevices; i++ {
-		go func() {
-			randomClient := rand.Intn(len(clients))
-			deviceId := uint64(rand.Uint32()) | uint64(i)<<32
-			setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
-		}()
+		randomClient := rand.Intn(len(clients))
+		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
+		go setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
 	}
 
 	if err := ss.waitForMigrationToStabilize(t); err != nil {
@@ -142,7 +141,7 @@ func TestRoutingServiceManyNodes(t *testing.T) {
 		// create devices in groups of 10
 		for j := 0; j < 10; j++ {
 			randomClient := rand.Intn(len(clients))
-			deviceId := uint64(rand.Uint32()) | uint64(i)<<32
+			deviceId := uint64(rand.Uint32())<<32 | uint64(i)
 			setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
 			i++
 		}
@@ -161,15 +160,14 @@ func TestRoutingServiceManyNodes(t *testing.T) {
 
 func TestRoutingServiceAddNodes(t *testing.T) {
 	totalDevices := 100
-	initialNodes := 1
 	finalNodes := 7
-	ss, clients := setup(initialNodes)
+	ss, clients := setup(1)
 	defer teardown(clients)
 
 	// create devices
 	for i := 0; i < totalDevices; i++ {
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32()) | uint64(i)<<32
+		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
 		setDeviceData(t, clients, randomClient, deviceId, []byte(fmt.Sprintf("test string from %d", i)))
 	}
 
@@ -198,12 +196,11 @@ func setup(nodes int) (*dummyStatefulServer, []*routingService) {
 	// setup clients
 	clients := make([]*routingService, nodes)
 	for i := range clients {
-		ss := &dummyStatefulServerProxy{ss: ss}
-		clients[i] = NewRoutingService(fmt.Sprintf("localhost:5%03d", i), "localhost:5%03d", uint32(i), ss).(*routingService)
+		clients[i] = NewRoutingService(fmt.Sprintf("localhost:5%03d", i), "localhost:5%03d", uint32(i), &dummyStatefulServerProxy{ss: ss}).(*routingService)
 	}
 
 	// wait for clients to connect to each other
-	time.Sleep(waitReadyTime + assumePropagationDelay)
+	time.Sleep(waitReadyTime + time.Millisecond*500)
 
 	return ss, clients
 }
@@ -224,13 +221,16 @@ func setDeviceData(t *testing.T, clients []*routingService, client int, device u
 }
 
 func (ss *dummyStatefulServer) waitForMigrationToStabilize(t *testing.T) error {
-	// if there are no changes
+	// wait a moment (give time for at least one request to run all the way through)
+	time.Sleep(assumePropagationDelay)
 	now := time.Now()
-	for startTime, lastRequestTime := now, now; now.Before(lastRequestTime.Add(assumePropagationDelay)); now = time.Now() {
+	// repeat as long as a request has just recently occurred
+	for startTime, lastRequestTime := now, now; now.Before(lastRequestTime.Add(assumeStabilizationDelay)); now = time.Now() {
 		if now.After(startTime.Add(time.Second * 2)) {
 			return errors.New("output failed to stabilize")
 		}
-		time.Sleep(lastRequestTime.Add(assumePropagationDelay).Sub(now))
+		// requests haven't yet stabilized
+		time.Sleep(lastRequestTime.Add(assumeStabilizationDelay).Sub(now))
 
 		ss.mutex.Lock()
 		lastRequestTime = ss.lastRequestTime
@@ -317,7 +317,7 @@ func (ss *dummyStatefulServer) Unlock(ctx context.Context, r *stateful.UnlockReq
 	ss.unlockCount++
 
 	if owner, have := ss.deviceOwner[r.Device]; !have || owner != ordinal {
-		panic("device shouldn't be owned when Lock() is called")
+		panic("device should be owned when Unlock() is called")
 	}
 	delete(ss.deviceOwner, r.Device)
 
@@ -333,7 +333,7 @@ func (ss *dummyStatefulServer) SetData(ctx context.Context, r *stateful.SetDataR
 	ss.lastRequestTime = time.Now()
 	ss.setDataCount++
 	if owner, have := ss.deviceOwner[r.Device]; !have || owner != ordinal {
-		panic("device shouldn't be owned when Lock() is called")
+		panic("device should be owned when SetData() is called")
 	}
 	if ss.fail {
 		return &empty.Empty{}, errors.New("test error")
@@ -348,7 +348,7 @@ func (ss *dummyStatefulServer) GetData(ctx context.Context, r *stateful.GetDataR
 	ss.lastRequestTime = time.Now()
 	ss.getDataCount++
 	if owner, have := ss.deviceOwner[r.Device]; !have || owner != ordinal {
-		panic("device shouldn't be owned when Lock() is called")
+		panic("device should be owned when GetData() is called")
 	}
 	if ss.fail {
 		return &stateful.GetDataResponse{}, errors.New("test error")

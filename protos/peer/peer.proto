@@ -19,6 +19,7 @@ message HelloRequest {
 message NextDeviceRequest {
   uint32 ordinal = 1;
   uint64 readiness = 2;
+  bool max_readiness = 3;
 }
 
 message NextDeviceResponse {
@@ -30,10 +31,11 @@ message NextDeviceResponse {
 message ReadinessRequest {
   uint32 ordinal = 1;
   uint64 readiness = 2;
+  bool max_readiness = 3;
 }
 
 message StatsRequest {
-  map<uint32, uint32> deviceCounts = 1;
+  map<uint32, uint32> device_counts = 1;
 }
 
 message HandoffRequest {

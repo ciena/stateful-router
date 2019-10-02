@@ -1,7 +1,6 @@
 package routing
 
 import (
-	"context"
 	"fmt"
 	"github.com/khagerma/stateful-experiment/protos/peer"
 )
@@ -90,7 +89,7 @@ func (router *routingService) startStatsNotifier() {
 
 		data.updatingPeers[router.ordinal] = deviceCount
 		for node := range toUpdate {
-			if _, err := node.UpdateStats(context.Background(), &peer.StatsRequest{DeviceCounts: data.updatingPeers}); err != nil {
+			if _, err := node.UpdateStats(router.ctx, &peer.StatsRequest{DeviceCounts: data.updatingPeers}); err != nil {
 				fmt.Println(err)
 			}
 		}
