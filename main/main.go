@@ -5,8 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/khagerma/stateful-experiment/protos/server"
-	"github.com/khagerma/stateful-experiment/routing_service"
-	"github.com/khagerma/stateful-experiment/stateful_service_implementation"
+	"github.com/khagerma/stateful-experiment/example_service_implementation"
 	"os"
 	"os/signal"
 	"regexp"
@@ -53,7 +52,7 @@ func main() {
 
 	fmt.Println("ordinal:", ordinal)
 
-	client := routing.NewRoutingService(listenAddress, peerDNSFormat, uint32(ordinal), stateful_service.New())
+	client := example_service.New(uint32(ordinal), peerDNSFormat, listenAddress)
 
 	//go sendDummyRequests(client, uint32(ordinal))
 
@@ -62,6 +61,7 @@ func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	fmt.Println(<-sigs)
+	client.Stop()
 }
 
 func sendDummyRequests(client stateful.StatefulServer, ordinal uint32) {

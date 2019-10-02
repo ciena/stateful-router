@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/khagerma/stateful-experiment/protos/server"
+	"google.golang.org/grpc"
 	"math"
 	"math/rand"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -173,7 +175,9 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 
 	for len(clients) < finalNodes {
 		// add a client
-		clients = append(clients, NewRoutingService(fmt.Sprintf("localhost:5%03d", len(clients)), "localhost:5%03d", uint32(len(clients)), &dummyStatefulServerProxy{ss: ss}).(*routingService))
+		client := &dummyStatefulServerProxy{ss: ss}
+		go client.start(uint32(len(clients)), "localhost:5%03d", fmt.Sprintf("localhost:5%03d", len(clients)))
+		clients = append(clients, client)
 
 		time.Sleep(waitReadyTime + assumePropagationDelay)
 
@@ -189,14 +193,16 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 	}
 }
 
-func setup(nodes int) (*dummyStatefulServer, []*routingService) {
+func setup(nodes int) (*dummyStatefulServer, []*dummyStatefulServerProxy) {
 	// fake local DB
 	ss := &dummyStatefulServer{deviceData: make(map[uint64][]byte), deviceOwner: make(map[uint64]uint32)}
 
 	// setup clients
-	clients := make([]*routingService, nodes)
+	clients := make([]*dummyStatefulServerProxy, nodes)
 	for i := range clients {
-		clients[i] = NewRoutingService(fmt.Sprintf("localhost:5%03d", i), "localhost:5%03d", uint32(i), &dummyStatefulServerProxy{ss: ss}).(*routingService)
+		client := &dummyStatefulServerProxy{ss: ss}
+		go client.start(uint32(i), "localhost:5%03d", fmt.Sprintf("localhost:5%03d", i))
+		clients[i] = client
 	}
 
 	// wait for clients to connect to each other
@@ -205,13 +211,13 @@ func setup(nodes int) (*dummyStatefulServer, []*routingService) {
 	return ss, clients
 }
 
-func teardown(clients []*routingService) {
+func teardown(clients []*dummyStatefulServerProxy) {
 	for _, client := range clients {
-		client.Stop()
+		client.stop()
 	}
 }
 
-func setDeviceData(t *testing.T, clients []*routingService, client int, device uint64, data []byte) {
+func setDeviceData(t *testing.T, clients []*dummyStatefulServerProxy, client int, device uint64, data []byte) {
 	if _, err := clients[client].SetData(context.Background(), &stateful.SetDataRequest{
 		Device: device,
 		Data:   data,
@@ -239,17 +245,17 @@ func (ss *dummyStatefulServer) waitForMigrationToStabilize(t *testing.T) error {
 	return nil
 }
 
-func verifyDeviceCounts(clients []*routingService, numDevices int) error {
+func verifyDeviceCounts(clients []*dummyStatefulServerProxy, numDevices int) error {
 	for i, client := range clients {
 		spare := 0
 		if i < numDevices%len(clients) {
 			spare = 1
 		}
-		shouldHave, have := numDevices/len(clients)+spare, len(client.devices)
+		shouldHave, have := numDevices/len(clients)+spare, len(client.router.r.devices)
 		if have != shouldHave {
 			str := fmt.Sprintf("wrong number of devices on core (%d total)\n", numDevices)
 			for i, client := range clients {
-				str += fmt.Sprintln(i, "has", len(client.devices), "devices")
+				str += fmt.Sprintln(i, "has", len(client.router.r.devices), "devices")
 			}
 			str += fmt.Sprintf("client %d should have %d devices, has %d\n", i, shouldHave, have)
 			return errors.New(str)
@@ -260,19 +266,57 @@ func verifyDeviceCounts(clients []*routingService, numDevices int) error {
 
 type dummyStatefulServerProxy struct {
 	ordinal uint32
+	router  Router
+	server  *grpc.Server
 	ss      *dummyStatefulServer
 }
 
-func (ss *dummyStatefulServerProxy) Lock(ctx context.Context, r *stateful.LockRequest) (*empty.Empty, error) {
-	return ss.ss.Lock(ctx, r, ss.ordinal)
+func (ss *dummyStatefulServerProxy) start(ordinal uint32, peerDNSFormat, address string) {
+	// create routing instance
+	ss.router, ss.server = New(ordinal, peerDNSFormat, ss)
+	// register self
+	stateful.RegisterStatefulServer(ss.server, ss)
+	// listen for requests
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		panic(fmt.Sprintf("failed to listen: %v", err))
+	}
+	if err := ss.server.Serve(listener); err != nil {
+		panic(fmt.Sprintf("failed to serve: %v", err))
+	}
 }
-func (ss *dummyStatefulServerProxy) Unlock(ctx context.Context, r *stateful.UnlockRequest) (*empty.Empty, error) {
-	return ss.ss.Unlock(ctx, r, ss.ordinal)
+
+func (ss *dummyStatefulServerProxy) stop() {
+	ss.router.Stop()
+	ss.server.Stop()
+}
+
+func (ss *dummyStatefulServerProxy) Load(ctx context.Context, device uint64) error {
+	return ss.ss.Lock(ctx, device, ss.ordinal)
+}
+func (ss *dummyStatefulServerProxy) Unload(device uint64) {
+	ss.ss.Unlock(device, ss.ordinal)
 }
 func (ss *dummyStatefulServerProxy) SetData(ctx context.Context, r *stateful.SetDataRequest) (*empty.Empty, error) {
+	if mutex, remoteHandler, forward, err := ss.router.HandlerFor(r.Device); err != nil {
+		return &empty.Empty{}, err
+	} else if forward {
+		return stateful.NewStatefulClient(remoteHandler).SetData(ctx, r)
+	} else {
+		defer mutex.RUnlock()
+	}
+
 	return ss.ss.SetData(ctx, r, ss.ordinal)
 }
 func (ss *dummyStatefulServerProxy) GetData(ctx context.Context, r *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
+	if mutex, remoteHandler, forward, err := ss.router.HandlerFor(r.Device); err != nil {
+		return &stateful.GetDataResponse{}, err
+	} else if forward {
+		return stateful.NewStatefulClient(remoteHandler).GetData(ctx, r)
+	} else {
+		defer mutex.RUnlock()
+	}
+
 	return ss.ss.GetData(ctx, r, ss.ordinal)
 }
 
@@ -292,39 +336,30 @@ type dummyStatefulServer struct {
 	lastRequestTime time.Time
 }
 
-func (ss *dummyStatefulServer) Lock(ctx context.Context, r *stateful.LockRequest, ordinal uint32) (*empty.Empty, error) {
+func (ss *dummyStatefulServer) Lock(ctx context.Context, device uint64, ordinal uint32) error {
 	ss.mutex.Lock()
 	defer ss.mutex.Unlock()
 
 	ss.lastRequestTime = time.Now()
 	ss.lockCount++
 
-	if _, have := ss.deviceOwner[r.Device]; have {
+	if _, have := ss.deviceOwner[device]; have {
 		panic("device shouldn't be owned when Lock() is called")
 	}
-	ss.deviceOwner[r.Device] = ordinal
-
-	if ss.fail {
-		return &empty.Empty{}, errors.New("test error")
-	}
-	return &empty.Empty{}, nil
+	ss.deviceOwner[device] = ordinal
+	return nil
 }
-func (ss *dummyStatefulServer) Unlock(ctx context.Context, r *stateful.UnlockRequest, ordinal uint32) (*empty.Empty, error) {
+func (ss *dummyStatefulServer) Unlock(device uint64, ordinal uint32) {
 	ss.mutex.Lock()
 	defer ss.mutex.Unlock()
 
 	ss.lastRequestTime = time.Now()
 	ss.unlockCount++
 
-	if owner, have := ss.deviceOwner[r.Device]; !have || owner != ordinal {
+	if owner, have := ss.deviceOwner[device]; !have || owner != ordinal {
 		panic("device should be owned when Unlock() is called")
 	}
-	delete(ss.deviceOwner, r.Device)
-
-	if ss.fail {
-		return &empty.Empty{}, errors.New("test error")
-	}
-	return &empty.Empty{}, nil
+	delete(ss.deviceOwner, device)
 }
 func (ss *dummyStatefulServer) SetData(ctx context.Context, r *stateful.SetDataRequest, ordinal uint32) (*empty.Empty, error) {
 	ss.mutex.Lock()

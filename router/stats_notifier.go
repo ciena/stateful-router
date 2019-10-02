@@ -5,55 +5,7 @@ import (
 	"github.com/khagerma/stateful-experiment/protos/peer"
 )
 
-type deviceCountEventData struct {
-	ch             chan struct{}
-	updateComplete chan struct{}
-	updatingPeers  map[uint32]uint32
-}
-
-var closedChan chan struct{}
-
-func init() {
-	closedChan = make(chan struct{})
-	close(closedChan)
-}
-
-func (router *routingService) deviceCountChanged() {
-	router.eventMutex.Lock()
-	defer router.eventMutex.Unlock()
-
-	// rebalance as well
-	if router.rebalanceEventData.ch != nil {
-		close(router.rebalanceEventData.ch)
-		router.rebalanceEventData.ch = nil
-	}
-
-	if router.deviceCountEventData.ch != nil {
-		close(router.deviceCountEventData.ch)
-		router.deviceCountEventData.ch = nil
-	}
-}
-
-func (router *routingService) deviceCountPeerChanged(nodeId uint32, devices uint32) chan struct{} {
-	router.eventMutex.Lock()
-	defer router.eventMutex.Unlock()
-
-	// rebalance as well
-	if router.rebalanceEventData.ch != nil {
-		close(router.rebalanceEventData.ch)
-		router.rebalanceEventData.ch = nil
-	}
-
-	router.deviceCountEventData.updatingPeers[nodeId] = devices
-	if router.deviceCountEventData.ch != nil {
-		close(router.deviceCountEventData.ch)
-		router.deviceCountEventData.ch = nil
-	}
-
-	return router.deviceCountEventData.updateComplete
-}
-
-func (router *routingService) startStatsNotifier() {
+func (router *router) startStatsNotifier() {
 	defer close(router.deviceCountEventHandlerDone)
 	for {
 		router.eventMutex.Lock()
