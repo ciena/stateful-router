@@ -200,6 +200,18 @@ func (router *router) migrateDevices(devicesToMove map[uint64]*deviceData, origi
 }
 
 func (router *router) migrateDevice(deviceId uint64, device *deviceData, devices uint32) {
+	router.unloadDevice(deviceId, device)
+
+	if _, err := router.Handoff(router.ctx, &peer.HandoffRequest{
+		Device:  deviceId,
+		Ordinal: router.ordinal,
+		Devices: devices,
+	}); err != nil {
+		fmt.Println(err)
+	}
+}
+
+func (router *router) unloadDevice(deviceId uint64, device *deviceData) {
 	// ensure the device has actually finished loading
 	<-device.loadingDone
 	if device.loadingError == nil {
@@ -208,14 +220,6 @@ func (router *router) migrateDevice(deviceId uint64, device *deviceData, devices
 		fmt.Printf("Unloading device %016x\n", deviceId)
 		router.loader.Unload(deviceId)
 		device.mutex.Unlock()
-	}
-
-	if _, err := router.Handoff(router.ctx, &peer.HandoffRequest{
-		Device:  deviceId,
-		Ordinal: router.ordinal,
-		Devices: devices,
-	}); err != nil {
-		fmt.Println(err)
 	}
 }
 

@@ -57,6 +57,23 @@ func (r Router) Stop() {
 	<-r.r.deviceCountEventHandlerDone
 }
 
+// this should be called when a device has been, or should be,
+// unloaded **from the local node only** due to external circumstance
+// (device lock lost, device deleted, inactivity timeout, etc.)
+func (r Router) UnloadDevice(deviceId uint64) {
+	r.r.deviceMutex.Lock()
+	device, have := r.r.devices[deviceId]
+	if have {
+		delete(r.r.devices, deviceId)
+		r.r.deviceCountChanged()
+	}
+	r.r.deviceMutex.Unlock()
+
+	if have {
+		r.r.unloadDevice(deviceId, device)
+	}
+}
+
 // HandlerFor returns a processor for the given device,
 // to either handle the request locally,
 // or forward it on to the appropriate peer

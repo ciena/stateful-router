@@ -33,7 +33,6 @@ func (router *router) startRebalancer() {
 
 		router.deviceMutex.RLock()
 		deviceCount := uint32(len(router.devices))
-
 		var proposedDecrementReadiness uint64
 		for deviceId := range router.devices {
 			if deviceId > proposedDecrementReadiness {
@@ -45,115 +44,99 @@ func (router *router) startRebalancer() {
 		// we want to jump to max (accept all devices) if all nodes w/ > readiness are suddenly missing
 		// we want to increment if devices < average # of devices on nodes w/ >= the proposed readiness
 		// we want to decrement if devices > average # of devices on nodes w/ > the proposed readiness
-		shouldJumpToMax := !router.maxReadiness
-		var numPeers uint64 = 1
-		var numGreaterOrdinalNodes uint64
-		var peersDeviceCount = uint64(deviceCount)
-
 		router.peerMutex.RLock()
+		sortedNodes := make([]uint32, 1, len(router.peers)+1)
+		sortedNodes[0] = router.ordinal
+
+		var totalDeviceCount = uint64(deviceCount)
+		var nodeCount uint64 = 1
+
+		shouldJumpToMax := true
 		for nodeId, node := range router.peers {
 			if node.connected {
 				if node.maxReadiness || node.readiness > router.readiness {
 					shouldJumpToMax = false
 				}
 
-				peersDeviceCount += uint64(node.devices)
-				numPeers++
-				if nodeId > router.ordinal {
-					numGreaterOrdinalNodes++
-				}
+				totalDeviceCount += uint64(node.devices)
+				nodeCount++
+
+				sortedNodes = append(sortedNodes, nodeId)
 			}
 		}
 
-		sortedNodes := make([]uint32, len(router.peers)+1)
-		sortedNodes[0] = router.ordinal
-		ctr := 1
-		for nodeId := range router.peers {
-			sortedNodes[ctr] = nodeId
-			ctr++
-		}
+		// sort nodes by ID
 		sort.Slice(sortedNodes, func(i, j int) bool { return sortedNodes[i] < sortedNodes[j] })
+
+		// devices per peer, and remainder
+		averageDevices := uint32(totalDeviceCount / nodeCount)
+		remainingDevices := totalDeviceCount % nodeCount
 
 		// calculate how many devices each peer should have
 		nodesShouldHave := make(map[uint32]uint32, len(sortedNodes))
-		for i, nodeId := range sortedNodes {
-			if nodeId != router.ordinal {
-				nodesShouldHave[nodeId] = uint32(peersDeviceCount / numPeers)
-				// if to the left of the shouldHave line
-				if uint64(i) < peersDeviceCount%numPeers {
-					nodesShouldHave[nodeId]++
-				}
-			}
+		for _, nodeId := range sortedNodes[0:remainingDevices] {
+			nodesShouldHave[nodeId] = averageDevices + 1
 		}
-		// fmt.Println(router.ordinal, "nodesShouldHave:", nodesShouldHave, peersDeviceCount, numPeers)
-
-		maxDevices := uint32((peersDeviceCount + numGreaterOrdinalNodes) / numPeers)
-		minDevices := int64(maxDevices)
-		//if (peersDeviceCount+numGreaterOrdinalNodes)%numPeers == 0 {
-		//	minDevices-- // ?
-		//}
-		// fmt.Println(router.ordinal, "Have", deviceCount, "should have between", minDevices, "and", maxDevices)
+		for _, nodeId := range sortedNodes[remainingDevices:] {
+			nodesShouldHave[nodeId] = averageDevices
+		}
 
 		increment, decrement := false, false
 
 		// if too few devices
-		if int64(deviceCount) < minDevices {
-			// pull
+		if deviceCount < nodesShouldHave[router.ordinal] {
+			// pull device
 			increment = true
 		}
 
 		// if too many devices
-		if deviceCount > maxDevices {
+		if deviceCount > nodesShouldHave[router.ordinal] {
+
 			// iff ALL other nodes have >= correct number of devices OR have MAX readiness
 			allPeersMeetRequisite := true
 			for nodeId, node := range router.peers {
-				if !(node.devices >= nodesShouldHave[nodeId] || node.maxReadiness) {
-					// fmt.Println(router.ordinal, "peer", nodeId, "doesn't meet requisite, has", node.devices)
-					allPeersMeetRequisite = false
-					break
+				if node.connected {
+					if !(node.devices >= nodesShouldHave[nodeId] || node.maxReadiness) {
+						allPeersMeetRequisite = false
+						break
+					}
 				}
 			}
-			// fmt.Println(router.ordinal, "allPeersMeetRequisite:", allPeersMeetRequisite)
 			if allPeersMeetRequisite {
-				// push
+				// push device
 				decrement = true
 			}
 		}
 		router.peerMutex.RUnlock()
 
-		// repeat flag for readiness change
-		done := false
-
 		if !router.maxReadiness && (shouldJumpToMax || increment) {
+			// increase readiness
 			proposedIncrementReadiness, proposedIncrementMaxReadiness := router.searchPeersForNextDevice()
 			fmt.Printf("%d Increment: Changing readiness to %016x MAX:%v\n", router.ordinal, proposedIncrementReadiness, proposedIncrementMaxReadiness)
 			router.changeReadinessTo(true, proposedIncrementReadiness, proposedIncrementMaxReadiness)
-		} else if router.readiness != 0 && decrement {
+		} else if decrement {
+			// decrease readiness
 			fmt.Printf("%d Decrement: Changing readiness to %016x\n", router.ordinal, proposedDecrementReadiness)
 			router.changeReadinessTo(false, proposedDecrementReadiness, false)
-		} else {
-			// we're done, and don't need to repeat unless something changes
-			done = true
-		}
 
-		// if readiness has decreased, kick out any devices that no longer belong on this node
-		router.deviceMutex.Lock()
-		originalDeviceCount := uint32(len(router.devices))
-		devicesToMove := make(map[uint64]*deviceData)
-		for deviceId, device := range router.devices {
-			//for every device that no longer belongs on this node
-			if deviceId >= router.readiness && !router.maxReadiness {
-				fmt.Printf("Will migrate device %016x\n", deviceId)
-				//release and notify that it's moved
-				devicesToMove[deviceId] = device
-				delete(router.devices, deviceId)
+			// after readiness is decreased, kick out any devices that no longer belong on this node
+			router.deviceMutex.Lock()
+			originalDeviceCount := uint32(len(router.devices))
+			devicesToMove := make(map[uint64]*deviceData)
+			for deviceId, device := range router.devices {
+				//for every device that no longer belongs on this node
+				if deviceId >= router.readiness && !router.maxReadiness {
+					fmt.Printf("Will migrate device %016x\n", deviceId)
+					//release and notify that it's moved
+					devicesToMove[deviceId] = device
+					delete(router.devices, deviceId)
+				}
 			}
-		}
-		router.deviceMutex.Unlock()
+			router.deviceMutex.Unlock()
 
-		router.migrateDevices(devicesToMove, originalDeviceCount)
-
-		if done {
+			router.migrateDevices(devicesToMove, originalDeviceCount)
+		} else {
+			// if readiness has stabilized, we don't need to repeat unless something changes
 			// wait until something changes
 			select {
 			case <-router.ctx.Done():
@@ -214,7 +197,7 @@ func (router *router) searchPeersForNextDevice() (uint64, bool) {
 
 // changeReadinessTo handles the complexity of changing readiness
 // readiness must be updated then broadcast when increasing (start accepting requests, then have other nodes start sending requests)
-// but it must be broadcast then updated when decreasing (have other nodes stop sending requests, the stop accepting requests)
+// but it must be broadcast then updated when decreasing (have other nodes stop sending requests, then stop accepting requests)
 // in addition, when decreasing from maxReadiness, a peer may reject the request, in which case other peers must be reverted
 // (this is to ensure that at least one node always has maximum readiness, so that at least one node can handle any request)
 func (router *router) changeReadinessTo(increase bool, readiness uint64, maxReadiness bool) {
