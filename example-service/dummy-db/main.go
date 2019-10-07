@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/khagerma/stateful-experiment/protos/db"
+	"github.com/kent-h/stateful-router/example-service/protos/db"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"net"
@@ -17,8 +17,8 @@ import (
 var maxTime = time.Unix(1<<63-62135596801, 999999999)
 
 func main() {
-	addr, have:=os.LookupEnv("LISTEN_ADDRESS")
-	if !have{
+	addr, have := os.LookupEnv("LISTEN_ADDRESS")
+	if !have {
 		panic("env var LISTEN_ADDRESS not defined")
 	}
 

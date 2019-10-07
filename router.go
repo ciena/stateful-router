@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/khagerma/stateful-experiment/router/protos/peer"
+	"github.com/kent-h/stateful-router/protos/peer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/keepalive"
@@ -193,7 +193,7 @@ func (router *Router) migrateDevices(devicesToMove map[uint64]*deviceData, origi
 func (router *Router) migrateDevice(deviceId uint64, device *deviceData, devices uint32) {
 	router.unloadDevice(deviceId, device)
 
-	peerApi := routerPeerApi{router}
+	peerApi := peerApi{router}
 	if _, err := peerApi.Handoff(router.ctx, &peer.HandoffRequest{
 		Device:  deviceId,
 		Ordinal: router.ordinal,

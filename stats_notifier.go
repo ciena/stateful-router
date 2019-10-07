@@ -2,7 +2,7 @@ package router
 
 import (
 	"fmt"
-	"github.com/khagerma/stateful-experiment/router/protos/peer"
+	"github.com/kent-h/stateful-router/protos/peer"
 )
 
 func (router *Router) startStatsNotifier() {

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/khagerma/stateful-experiment/protos/server"
+	"github.com/kent-h/stateful-router/example-service/protos/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"os"

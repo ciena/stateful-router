@@ -4,9 +4,9 @@ FROM golang:1.12 as build
 RUN go get -u github.com/kardianos/govendor
 
 # project-specific information
-ARG PROJECT_PATH=github.com/khagerma/stateful-experiment
+ARG PROJECT_PATH=github.com/kent-h/stateful-router
 ARG INJECT_PACKAGE_PATH=main
-ARG MAIN_PATH=main/main.go
+ARG MAIN_PATH=dummy-db/main.go
 
 WORKDIR /go/src/$PROJECT_PATH
 

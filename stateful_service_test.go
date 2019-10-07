@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/khagerma/stateful-experiment/router/protos/test"
+	"github.com/kent-h/stateful-router/protos/test"
 	"google.golang.org/grpc"
 	"math"
 	"math/rand"

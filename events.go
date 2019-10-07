@@ -1,6 +1,6 @@
 package router
 
-import "github.com/khagerma/stateful-experiment/router/protos/peer"
+import "github.com/kent-h/stateful-router/protos/peer"
 
 type rebalanceEventData struct {
 	ch       chan struct{}

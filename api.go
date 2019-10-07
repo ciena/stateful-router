@@ -2,7 +2,7 @@ package router
 
 import (
 	"context"
-	"github.com/khagerma/stateful-experiment/router/protos/peer"
+	"github.com/kent-h/stateful-router/protos/peer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"time"
@@ -60,7 +60,7 @@ func New(ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallbac
 			PermitWithoutStream: true,
 		}))
 
-	peer.RegisterPeerServer(server, routerPeerApi{router})
+	peer.RegisterPeerServer(server, peerApi{router})
 	return router, server
 }
 

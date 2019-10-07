@@ -73,10 +73,10 @@ func generateArray(randomness uint64, width uint8) []uint8 {
 			random = randomness
 		}
 		if i == 3 { // 4
-			if randomness%12 < 4{
+			if randomness%12 < 4 {
 				random = randomness
-			}else{
-				random = 7-(randomness%12-4)/2
+			} else {
+				random = 7 - (randomness%12-4)/2
 			}
 		}
 		if i == 4 { // 5
