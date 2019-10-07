@@ -1,11 +1,11 @@
-package routing
+package router
 
 import (
 	"fmt"
-	"github.com/khagerma/stateful-experiment/protos/peer"
+	"github.com/khagerma/stateful-experiment/router/protos/peer"
 )
 
-func (router *router) startStatsNotifier() {
+func (router *Router) startStatsNotifier() {
 	defer close(router.deviceCountEventHandlerDone)
 	for {
 		router.eventMutex.Lock()

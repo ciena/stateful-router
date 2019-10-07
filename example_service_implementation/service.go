@@ -15,7 +15,7 @@ import (
 )
 
 type StatefulService struct {
-	router   routing.Router
+	router   *router.Router
 	dbClient db.DBClient
 	server   *grpc.Server
 
@@ -50,7 +50,7 @@ func New(ordinal uint32, peerDNSFormat, address string) *StatefulService {
 
 func (ss *StatefulService) start(ordinal uint32, peerDNSFormat, address string) {
 	// create routing instance
-	ss.router, ss.server = routing.New(ordinal, peerDNSFormat, ss)
+	ss.router, ss.server = router.New(ordinal, peerDNSFormat, ss, nil)
 	// register self
 	stateful.RegisterStatefulServer(ss.server, ss)
 	// listen for requests

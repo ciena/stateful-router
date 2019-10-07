@@ -1,19 +1,23 @@
-package routing
+package router
 
 import (
 	"context"
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/khagerma/stateful-experiment/protos/peer"
+	"github.com/khagerma/stateful-experiment/router/protos/peer"
 	"github.com/pkg/errors"
 	"math"
 )
 
-func (router *router) Hello(ctx context.Context, request *peer.HelloRequest) (*empty.Empty, error) {
+type routerPeerApi struct{
+	*Router
+}
+
+func (router routerPeerApi) Hello(ctx context.Context, request *peer.HelloRequest) (*empty.Empty, error) {
 	router.connect(request.Ordinal)
 	return &empty.Empty{}, nil
 }
 
-func (router *router) UpdateStats(ctx context.Context, request *peer.StatsRequest) (*empty.Empty, error) {
+func (router routerPeerApi) UpdateStats(ctx context.Context, request *peer.StatsRequest) (*empty.Empty, error) {
 	router.peerMutex.RLock()
 	defer router.peerMutex.RUnlock()
 
@@ -26,7 +30,7 @@ func (router *router) UpdateStats(ctx context.Context, request *peer.StatsReques
 	return &empty.Empty{}, nil
 }
 
-func (router *router) NextDevice(ctx context.Context, request *peer.NextDeviceRequest) (*peer.NextDeviceResponse, error) {
+func (router routerPeerApi) NextDevice(ctx context.Context, request *peer.NextDeviceRequest) (*peer.NextDeviceResponse, error) {
 	router.deviceMutex.RLock()
 	defer router.deviceMutex.RUnlock()
 
@@ -54,7 +58,7 @@ func (router *router) NextDevice(ctx context.Context, request *peer.NextDeviceRe
 	return &peer.NextDeviceResponse{Has: found, Device: migrateNext, Last: isOnlyDeviceToMigrate}, nil
 }
 
-func (router *router) UpdateReadiness(ctx context.Context, request *peer.ReadinessRequest) (*empty.Empty, error) {
+func (router routerPeerApi) UpdateReadiness(ctx context.Context, request *peer.ReadinessRequest) (*empty.Empty, error) {
 	router.peerMutex.Lock()
 	recalculateReadiness := false
 	node := router.peers[request.Ordinal]
@@ -106,7 +110,7 @@ func (router *router) UpdateReadiness(ctx context.Context, request *peer.Readine
 }
 
 // Handoff is just basically hint to load a device, so we'll do normal loading/locking
-func (router *router) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
+func (router routerPeerApi) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
 	var peerUpdateComplete chan struct{}
 	if mutex, remoteHandler, forward, err := router.locate(request.Device, func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
 		return &empty.Empty{}, err

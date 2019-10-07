@@ -1,6 +1,6 @@
-package routing
+package router
 
-import "github.com/khagerma/stateful-experiment/protos/peer"
+import "github.com/khagerma/stateful-experiment/router/protos/peer"
 
 type rebalanceEventData struct {
 	ch       chan struct{}
@@ -13,14 +13,14 @@ type deviceCountEventData struct {
 	updatingPeers  map[uint32]uint32
 }
 
-func (router *router) rebalance() {
+func (router *Router) rebalance() {
 	router.eventMutex.Lock()
 	defer router.eventMutex.Unlock()
 
 	router.rebalanceUnsafe()
 }
 
-func (router *router) deviceCountChanged() {
+func (router *Router) deviceCountChanged() {
 	router.eventMutex.Lock()
 	defer router.eventMutex.Unlock()
 
@@ -29,7 +29,7 @@ func (router *router) deviceCountChanged() {
 	router.deviceCountChangedUnsafe()
 }
 
-func (router *router) peerConnected(node *node) {
+func (router *Router) peerConnected(node *node) {
 	router.eventMutex.Lock()
 	defer router.eventMutex.Unlock()
 
@@ -39,7 +39,7 @@ func (router *router) peerConnected(node *node) {
 	router.deviceCountChangedUnsafe()
 }
 
-func (router *router) deviceCountPeerChanged(nodeId uint32, devices uint32) chan struct{} {
+func (router *Router) deviceCountPeerChanged(nodeId uint32, devices uint32) chan struct{} {
 	router.eventMutex.Lock()
 	defer router.eventMutex.Unlock()
 
@@ -51,14 +51,14 @@ func (router *router) deviceCountPeerChanged(nodeId uint32, devices uint32) chan
 	return router.deviceCountEventData.updateComplete
 }
 
-func (router *router) deviceCountChangedUnsafe() {
+func (router *Router) deviceCountChangedUnsafe() {
 	if router.deviceCountEventData.ch != nil {
 		close(router.deviceCountEventData.ch)
 		router.deviceCountEventData.ch = nil
 	}
 }
 
-func (router *router) rebalanceUnsafe() {
+func (router *Router) rebalanceUnsafe() {
 	if router.rebalanceEventData.ch != nil {
 		close(router.rebalanceEventData.ch)
 		router.rebalanceEventData.ch = nil

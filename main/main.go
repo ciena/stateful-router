@@ -4,8 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/khagerma/stateful-experiment/protos/server"
 	"github.com/khagerma/stateful-experiment/example_service_implementation"
+	"github.com/khagerma/stateful-experiment/protos/server"
+	"github.com/khagerma/stateful-experiment/router"
 	"os"
 	"os/signal"
 	"regexp"
@@ -31,24 +32,7 @@ func init() {
 }
 
 func main() {
-	ordinalEnv, have := os.LookupEnv("ORDINAL")
-	if !have {
-		hostname, err := os.Hostname()
-		if err != nil {
-			panic(err)
-		}
-		regex := regexp.MustCompile(`\d+$`)
-		array := regex.FindString(hostname)
-		if array == "" {
-			panic("NAMESPACE env var is not of the form *.-\\d")
-		}
-		ordinalEnv = array
-	}
-
-	ordinal, err := strconv.ParseInt(ordinalEnv, 10, 32)
-	if err != nil {
-		panic(err)
-	}
+	ordinal := router.MustParseOrdinal(os.Getenv("ORDINAL"))
 
 	fmt.Println("ordinal:", ordinal)
 

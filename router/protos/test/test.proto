@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package test;
+
+service test {
+  rpc Test (TestRequest) returns (google.protobuf.Empty) {}
+}
+
+message TestRequest {
+  uint64 device = 1;
+}

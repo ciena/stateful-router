@@ -1,4 +1,4 @@
-package routing
+package router
 
 // returns a list of nodes from 0 to highestKnownOrdinal, randomly but deterministically sorted based on the id
 // the list is stable even with changes to highestKnownOrdinal

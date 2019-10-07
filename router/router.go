@@ -1,10 +1,10 @@
-package routing
+package router
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/khagerma/stateful-experiment/protos/peer"
+	"github.com/khagerma/stateful-experiment/router/protos/peer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/keepalive"
@@ -48,11 +48,7 @@ func init() {
 }
 
 type Router struct {
-	r *router
-}
-
-type router struct {
-	// every instance of router in the cluster has a unique ordinal ID,
+	// every instance of Router in the cluster has a unique ordinal ID,
 	// these should be sequentially assigned, starting from zero
 	// intended to be used with a k8s StatefulSet
 	ordinal uint32
@@ -61,7 +57,7 @@ type router struct {
 
 	// server accepts requests from peers
 	server *grpc.Server
-	// closed only when the router is stopping
+	// closed only when the Router is stopping
 	ctx           context.Context
 	ctxCancelFunc context.CancelFunc
 
@@ -109,12 +105,7 @@ type deviceData struct {
 	loadingError error
 }
 
-type DeviceLoader interface {
-	Load(ctx context.Context, deviceId uint64) error
-	Unload(deviceId uint64)
-}
-
-func (router *router) connect(ordinal uint32) {
+func (router *Router) connect(ordinal uint32) {
 	router.peerMutex.Lock()
 	defer router.peerMutex.Unlock()
 
@@ -142,7 +133,7 @@ func (router *router) connect(ordinal uint32) {
 	}
 }
 
-func (router *router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32) {
+func (router *Router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32) {
 	state := connectivity.Connecting
 	connectedAtLeastOnce := false
 	for cc.WaitForStateChange(router.ctx, state) {
@@ -188,7 +179,7 @@ func (router *router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32)
 	cc.Close()
 }
 
-func (router *router) migrateDevices(devicesToMove map[uint64]*deviceData, originalDeviceCount uint32) {
+func (router *Router) migrateDevices(devicesToMove map[uint64]*deviceData, originalDeviceCount uint32) {
 	if len(devicesToMove) != 0 {
 		var ctr uint32
 		for deviceId, device := range devicesToMove {
@@ -199,10 +190,11 @@ func (router *router) migrateDevices(devicesToMove map[uint64]*deviceData, origi
 	}
 }
 
-func (router *router) migrateDevice(deviceId uint64, device *deviceData, devices uint32) {
+func (router *Router) migrateDevice(deviceId uint64, device *deviceData, devices uint32) {
 	router.unloadDevice(deviceId, device)
 
-	if _, err := router.Handoff(router.ctx, &peer.HandoffRequest{
+	peerApi := routerPeerApi{router}
+	if _, err := peerApi.Handoff(router.ctx, &peer.HandoffRequest{
 		Device:  deviceId,
 		Ordinal: router.ordinal,
 		Devices: devices,
@@ -211,7 +203,7 @@ func (router *router) migrateDevice(deviceId uint64, device *deviceData, devices
 	}
 }
 
-func (router *router) unloadDevice(deviceId uint64, device *deviceData) {
+func (router *Router) unloadDevice(deviceId uint64, device *deviceData) {
 	// ensure the device has actually finished loading
 	<-device.loadingDone
 	if device.loadingError == nil {
@@ -226,7 +218,7 @@ func (router *router) unloadDevice(deviceId uint64, device *deviceData) {
 // bestOfUnsafe returns which node this request should be routed to
 // this takes into account node reachability & readiness
 // router.peerMutex is assumed to be held by the caller
-func (router *router) bestOfUnsafe(deviceId uint64) (uint32, error) {
+func (router *Router) bestOfUnsafe(deviceId uint64) (uint32, error) {
 	// build a list of possible nodes, including this one
 	possibleNodes := make(map[uint32]struct{})
 	if deviceId < router.readiness || router.maxReadiness {
@@ -246,7 +238,7 @@ func (router *router) bestOfUnsafe(deviceId uint64) (uint32, error) {
 	return BestOf(deviceId, possibleNodes), nil
 }
 
-func (router *router) locate(deviceId uint64, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+func (router *Router) locate(deviceId uint64, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
 	router.deviceMutex.RLock()
 	// if we have the device loaded, just process the request locally
 	if device, have := router.devices[deviceId]; have {

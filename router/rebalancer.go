@@ -1,13 +1,13 @@
-package routing
+package router
 
 import (
 	"fmt"
-	"github.com/khagerma/stateful-experiment/protos/peer"
+	"github.com/khagerma/stateful-experiment/router/protos/peer"
 	"math"
 	"sort"
 )
 
-func (router *router) startRebalancer() {
+func (router *Router) startRebalancer() {
 	fmt.Println("Starting rebalancer")
 	defer close(router.rebalanceEventHandlerDone)
 	for {
@@ -148,7 +148,7 @@ func (router *router) startRebalancer() {
 	}
 }
 
-func (router *router) searchPeersForNextDevice() (uint64, bool) {
+func (router *Router) searchPeersForNextDevice() (uint64, bool) {
 	router.peerMutex.Lock()
 	toNotify := make(map[uint32]peer.PeerClient, len(router.peers))
 	for nodeId, node := range router.peers {
@@ -200,7 +200,7 @@ func (router *router) searchPeersForNextDevice() (uint64, bool) {
 // but it must be broadcast then updated when decreasing (have other nodes stop sending requests, then stop accepting requests)
 // in addition, when decreasing from maxReadiness, a peer may reject the request, in which case other peers must be reverted
 // (this is to ensure that at least one node always has maximum readiness, so that at least one node can handle any request)
-func (router *router) changeReadinessTo(increase bool, readiness uint64, maxReadiness bool) {
+func (router *Router) changeReadinessTo(increase bool, readiness uint64, maxReadiness bool) {
 	router.peerMutex.Lock()
 	if increase {
 		// change which requests we will accept locally
