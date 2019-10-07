@@ -108,7 +108,7 @@ func (router *router) UpdateReadiness(ctx context.Context, request *peer.Readine
 // Handoff is just basically hint to load a device, so we'll do normal loading/locking
 func (router *router) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
 	var peerUpdateComplete chan struct{}
-	if mutex, remoteHandler, forward, err := router.handlerFor(request.Device, func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
+	if mutex, remoteHandler, forward, err := router.locate(request.Device, func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
 		return peer.NewPeerClient(remoteHandler).Handoff(ctx, request)

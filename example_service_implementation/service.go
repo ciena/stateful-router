@@ -109,10 +109,10 @@ func (ss *StatefulService) Unload(device uint64) {
 }
 
 func (ss *StatefulService) SetData(ctx context.Context, request *stateful.SetDataRequest) (*empty.Empty, error) {
-	if mutex, remoteHandler, forward, err := ss.router.HandlerFor(request.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(request.Device); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
-		return stateful.NewStatefulClient(remoteHandler).SetData(ctx, request)
+		return stateful.NewStatefulClient(cc).SetData(ctx, request)
 	} else {
 		defer mutex.RUnlock()
 	}
@@ -131,10 +131,10 @@ func (ss *StatefulService) SetData(ctx context.Context, request *stateful.SetDat
 }
 
 func (ss *StatefulService) GetData(ctx context.Context, request *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
-	if mutex, remoteHandler, forward, err := ss.router.HandlerFor(request.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(request.Device); err != nil {
 		return &stateful.GetDataResponse{}, err
 	} else if forward {
-		return stateful.NewStatefulClient(remoteHandler).GetData(ctx, request)
+		return stateful.NewStatefulClient(cc).GetData(ctx, request)
 	} else {
 		defer mutex.RUnlock()
 	}

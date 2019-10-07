@@ -298,10 +298,10 @@ func (ss *dummyStatefulServerProxy) Unload(device uint64) {
 	ss.ss.Unlock(device, ss.ordinal)
 }
 func (ss *dummyStatefulServerProxy) SetData(ctx context.Context, r *stateful.SetDataRequest) (*empty.Empty, error) {
-	if mutex, remoteHandler, forward, err := ss.router.HandlerFor(r.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(r.Device); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
-		return stateful.NewStatefulClient(remoteHandler).SetData(ctx, r)
+		return stateful.NewStatefulClient(cc).SetData(ctx, r)
 	} else {
 		defer mutex.RUnlock()
 	}
@@ -309,10 +309,10 @@ func (ss *dummyStatefulServerProxy) SetData(ctx context.Context, r *stateful.Set
 	return ss.ss.SetData(ctx, r, ss.ordinal)
 }
 func (ss *dummyStatefulServerProxy) GetData(ctx context.Context, r *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
-	if mutex, remoteHandler, forward, err := ss.router.HandlerFor(r.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(r.Device); err != nil {
 		return &stateful.GetDataResponse{}, err
 	} else if forward {
-		return stateful.NewStatefulClient(remoteHandler).GetData(ctx, r)
+		return stateful.NewStatefulClient(cc).GetData(ctx, r)
 	} else {
 		defer mutex.RUnlock()
 	}

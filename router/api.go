@@ -33,7 +33,7 @@ func New(ordinal uint32, peerDNSFormat string, loader DeviceLoader) (Router, *gr
 		router.connect(i)
 	}
 
-	// node will only start accepting requests after rebalancer is started (default is to accepting no requests)
+	// node will only start accepting requests after rebalancer is started (default readiness allows no requests)
 	time.AfterFunc(waitReadyTime, router.startRebalancer)
 	go router.startStatsNotifier()
 
@@ -74,9 +74,9 @@ func (r Router) UnloadDevice(deviceId uint64) {
 	}
 }
 
-// HandlerFor returns a processor for the given device,
+// Locate returns a processor for the given device,
 // to either handle the request locally,
 // or forward it on to the appropriate peer
-func (r Router) HandlerFor(deviceId uint64) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
-	return r.r.handlerFor(deviceId, r.r.deviceCountChanged)
+func (r Router) Locate(deviceId uint64) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+	return r.r.locate(deviceId, r.r.deviceCountChanged)
 }

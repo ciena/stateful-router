@@ -246,7 +246,7 @@ func (router *router) bestOfUnsafe(deviceId uint64) (uint32, error) {
 	return BestOf(deviceId, possibleNodes), nil
 }
 
-func (router *router) handlerFor(deviceId uint64, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+func (router *router) locate(deviceId uint64, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
 	router.deviceMutex.RLock()
 	// if we have the device loaded, just process the request locally
 	if device, have := router.devices[deviceId]; have {
@@ -282,7 +282,7 @@ func (router *router) handlerFor(deviceId uint64, deviceCountChangedCallback fun
 	if _, have := router.devices[deviceId]; have {
 		// some other thread loaded the device since we last checked
 		router.deviceMutex.Unlock()
-		return router.handlerFor(deviceId, deviceCountChangedCallback)
+		return router.locate(deviceId, deviceCountChangedCallback)
 	}
 	device := &deviceData{
 		loadingDone: make(chan struct{}),
