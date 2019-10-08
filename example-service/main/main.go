@@ -51,20 +51,20 @@ func main() {
 func sendDummyRequests(client stateful.StatefulServer, ordinal uint32) {
 	for device, ctr := uint64(0), 0; true; device, ctr = (device+1)%6, ctr+1 {
 		time.Sleep(time.Second * 1)
-		if response, err := client.GetData(context.Background(), &stateful.GetDataRequest{Device: device}); err != nil {
+		if response, err := client.GetData(context.Background(), &stateful.GetDataRequest{Device: strconv.FormatUint(device, 10)}); err != nil {
 			fmt.Println(err)
 		} else {
 			fmt.Println("Device:", device, "Data:", string(response.Data))
 		}
 
-		if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: device, Data: []byte(fmt.Sprint("some string ", ordinal, " ", ctr))}); err != nil {
+		if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: strconv.FormatUint(device, 10), Data: []byte(fmt.Sprint("some string ", ordinal, " ", ctr))}); err != nil {
 			fmt.Println(err)
 		}
 	}
 }
 
 func cli(client stateful.StatefulServer) {
-	regex := regexp.MustCompile(`^(set|get) (\d+)(.*)$`)
+	regex := regexp.MustCompile(`^(set|get) ([^ ]+)(.*)$`)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
@@ -74,10 +74,7 @@ func cli(client stateful.StatefulServer) {
 			continue
 		}
 
-		deviceId, err := strconv.ParseUint(array[2], 10, 64)
-		if err != nil {
-			panic(err)
-		}
+		deviceId := array[2]
 
 		if array[1] == "set" {
 			if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))}); err != nil {

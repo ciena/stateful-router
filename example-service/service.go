@@ -20,7 +20,7 @@ type StatefulService struct {
 	server   *grpc.Server
 
 	mutex      sync.Mutex
-	localState map[uint64]*state
+	localState map[string]*state
 }
 
 type state struct {
@@ -41,7 +41,7 @@ func New(ordinal uint32, peerDNSFormat, address string) *StatefulService {
 
 	ha := &StatefulService{
 		dbClient:   db.NewDBClient(cc),
-		localState: make(map[uint64]*state),
+		localState: make(map[string]*state),
 	}
 
 	go ha.start(ordinal, peerDNSFormat, address)
@@ -70,7 +70,7 @@ func (ss *StatefulService) Stop() {
 }
 
 // implementing routing.DeviceLocker
-func (ss *StatefulService) Load(ctx context.Context, device uint64) error {
+func (ss *StatefulService) Load(ctx context.Context, device string) error {
 	// acquire lock
 	response, err := ss.dbClient.Lock(ctx, &db.LockRequest{Device: device})
 	if err != nil {
@@ -93,7 +93,7 @@ func (ss *StatefulService) Load(ctx context.Context, device uint64) error {
 }
 
 // implementing routing.DeviceLocker
-func (ss *StatefulService) Unload(device uint64) {
+func (ss *StatefulService) Unload(device string) {
 	ss.mutex.Lock()
 	state := ss.localState[device]
 	delete(ss.localState, device)

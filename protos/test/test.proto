@@ -9,5 +9,5 @@ service test {
 }
 
 message TestRequest {
-  uint64 device = 1;
+  bytes device = 1;
 }

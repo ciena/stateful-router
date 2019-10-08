@@ -18,20 +18,24 @@ message HelloRequest {
 
 message NextDeviceRequest {
   uint32 ordinal = 1;
-  uint64 readiness = 2;
-  bool max_readiness = 3;
+
+  bytes readiness = 2;
+  bool ready_for_equal = 3;
+  bool readiness_max = 4;
 }
 
 message NextDeviceResponse {
   bool has = 1;
   bool last = 2;
-  uint64 device = 3;
+  bytes device = 3;
 }
 
 message ReadinessRequest {
   uint32 ordinal = 1;
-  uint64 readiness = 2;
-  bool max_readiness = 3;
+
+  bytes readiness = 2;
+  bool ready_for_equal = 3;
+  bool readiness_max = 4;
 }
 
 message StatsRequest {
@@ -39,7 +43,7 @@ message StatsRequest {
 }
 
 message HandoffRequest {
-  uint64 device = 1;
+  bytes device = 1;
 
   uint32 ordinal = 2;
   uint32 devices = 3;

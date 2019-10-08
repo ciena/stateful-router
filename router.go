@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/keepalive"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -61,20 +62,21 @@ type Router struct {
 	ctx           context.Context
 	ctxCancelFunc context.CancelFunc
 
-	// readiness and maxReadiness indicates which devices (if any) this node doesn't have responsibility for (devices < readiness),
+	// readiness and readinessMax indicates which devices (if any) this node doesn't have responsibility for (devices < readiness),
 	// it is owned by (and should only be changed by) the startRebalancer() thread
-	readiness                  uint64
-	maxReadiness               bool
+	readiness                  string
+	readyForEqual              bool
+	readinessMax               bool
 	decreasingFromMaxReadiness bool
 
 	// peerMutex synchronizes all access to the peers,
-	// it also guards access to readiness/maxReadiness for non- startRebalancer() threads
+	// it also guards access to readiness/readinessMax for non- startRebalancer() threads
 	peerMutex sync.RWMutex
 	peers     map[uint32]*node
 
 	// deviceMutex synchronizes all access to devices
 	deviceMutex sync.RWMutex
-	devices     map[uint64]*deviceData
+	devices     map[string]*deviceData
 
 	// events are sent to startRebalancer() and startStatsNotifier()
 	eventMutex           sync.Mutex
@@ -90,10 +92,11 @@ type Router struct {
 type node struct {
 	clientConn *grpc.ClientConn
 	peer.PeerClient
-	connected    bool   // have I connected to this node
-	readiness    uint64 // which devices are ready
-	maxReadiness bool
-	devices      uint32 // number of devices this node is handling
+	connected     bool   // have I connected to this node
+	readiness     string // which devices are ready
+	readyForEqual bool
+	readinessMax  bool
+	devices       uint32 // number of devices this node is handling
 }
 
 type deviceData struct {
@@ -169,7 +172,7 @@ func (router *Router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32)
 
 			} else {
 				node.connected = false
-				node.readiness, node.maxReadiness = 0, false
+				node.readiness, node.readyForEqual, node.readinessMax = "", false, false
 				node.devices = 0
 				router.rebalance()
 				router.peerMutex.Unlock()
@@ -179,7 +182,7 @@ func (router *Router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32)
 	cc.Close()
 }
 
-func (router *Router) migrateDevices(devicesToMove map[uint64]*deviceData, originalDeviceCount uint32) {
+func (router *Router) migrateDevices(devicesToMove map[string]*deviceData, originalDeviceCount uint32) {
 	if len(devicesToMove) != 0 {
 		var ctr uint32
 		for deviceId, device := range devicesToMove {
@@ -190,12 +193,12 @@ func (router *Router) migrateDevices(devicesToMove map[uint64]*deviceData, origi
 	}
 }
 
-func (router *Router) migrateDevice(deviceId uint64, device *deviceData, devices uint32) {
+func (router *Router) migrateDevice(deviceId string, device *deviceData, devices uint32) {
 	router.unloadDevice(deviceId, device)
 
 	peerApi := peerApi{router}
 	if _, err := peerApi.Handoff(router.ctx, &peer.HandoffRequest{
-		Device:  deviceId,
+		Device:  []byte(deviceId),
 		Ordinal: router.ordinal,
 		Devices: devices,
 	}); err != nil {
@@ -203,13 +206,13 @@ func (router *Router) migrateDevice(deviceId uint64, device *deviceData, devices
 	}
 }
 
-func (router *Router) unloadDevice(deviceId uint64, device *deviceData) {
+func (router *Router) unloadDevice(deviceId string, device *deviceData) {
 	// ensure the device has actually finished loading
 	<-device.loadingDone
 	if device.loadingError == nil {
 		// wait for all in-progress requests to drain
 		device.mutex.Lock()
-		fmt.Printf("Unloading device %016x\n", deviceId)
+		fmt.Printf("Unloading device %s\n", strconv.Quote(deviceId))
 		router.loader.Unload(deviceId)
 		device.mutex.Unlock()
 	}
@@ -218,14 +221,14 @@ func (router *Router) unloadDevice(deviceId uint64, device *deviceData) {
 // bestOfUnsafe returns which node this request should be routed to
 // this takes into account node reachability & readiness
 // router.peerMutex is assumed to be held by the caller
-func (router *Router) bestOfUnsafe(deviceId uint64) (uint32, error) {
+func (router *Router) bestOfUnsafe(deviceId string) (uint32, error) {
 	// build a list of possible nodes, including this one
 	possibleNodes := make(map[uint32]struct{})
-	if deviceId < router.readiness || router.maxReadiness {
+	if deviceId < router.readiness || (deviceId == router.readiness && router.readyForEqual) || router.readinessMax {
 		possibleNodes[router.ordinal] = struct{}{}
 	}
 	for nodeId, node := range router.peers {
-		if node.connected && (deviceId < node.readiness || node.maxReadiness) {
+		if node.connected && (deviceId < node.readiness || (deviceId == node.readiness && node.readyForEqual) || node.readinessMax) {
 			possibleNodes[nodeId] = struct{}{}
 		}
 	}
@@ -238,7 +241,7 @@ func (router *Router) bestOfUnsafe(deviceId uint64) (uint32, error) {
 	return BestOf(deviceId, possibleNodes), nil
 }
 
-func (router *Router) locate(deviceId uint64, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+func (router *Router) locate(deviceId string, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
 	router.deviceMutex.RLock()
 	// if we have the device loaded, just process the request locally
 	if device, have := router.devices[deviceId]; have {
@@ -284,7 +287,7 @@ func (router *Router) locate(deviceId uint64, deviceCountChangedCallback func())
 	deviceCountChangedCallback()
 	router.deviceMutex.Unlock()
 
-	fmt.Printf("Loading device %016x\n", deviceId)
+	fmt.Printf("Loading device %s\n", strconv.Quote(deviceId))
 	// have the implementation lock & load the device
 	if err := router.loader.Load(router.ctx, deviceId); err != nil {
 		// failed to load the device, release it

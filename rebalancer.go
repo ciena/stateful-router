@@ -3,8 +3,8 @@ package router
 import (
 	"fmt"
 	"github.com/kent-h/stateful-router/protos/peer"
-	"math"
 	"sort"
+	"strconv"
 )
 
 func (router *Router) startRebalancer() {
@@ -23,9 +23,10 @@ func (router *Router) startRebalancer() {
 		// send hello message to new peers
 		for node := range data.newPeers {
 			if _, err := node.UpdateReadiness(router.ctx, &peer.ReadinessRequest{
-				Ordinal:      router.ordinal,
-				Readiness:    router.readiness,
-				MaxReadiness: router.maxReadiness,
+				Ordinal:       router.ordinal,
+				Readiness:     []byte(router.readiness),
+				ReadyForEqual: router.readyForEqual,
+				ReadinessMax:  router.readinessMax,
 			}); err != nil {
 				fmt.Println(err)
 			}
@@ -33,7 +34,7 @@ func (router *Router) startRebalancer() {
 
 		router.deviceMutex.RLock()
 		deviceCount := uint32(len(router.devices))
-		var proposedDecrementReadiness uint64
+		var proposedDecrementReadiness string
 		for deviceId := range router.devices {
 			if deviceId > proposedDecrementReadiness {
 				proposedDecrementReadiness = deviceId
@@ -54,7 +55,7 @@ func (router *Router) startRebalancer() {
 		shouldJumpToMax := true
 		for nodeId, node := range router.peers {
 			if node.connected {
-				if node.maxReadiness || node.readiness > router.readiness {
+				if node.readinessMax || node.readiness > router.readiness || (node.readiness == router.readiness && node.readyForEqual && !router.readyForEqual) {
 					shouldJumpToMax = false
 				}
 
@@ -96,7 +97,7 @@ func (router *Router) startRebalancer() {
 			allPeersMeetRequisite := true
 			for nodeId, node := range router.peers {
 				if node.connected {
-					if !(node.devices >= nodesShouldHave[nodeId] || node.maxReadiness) {
+					if !(node.devices >= nodesShouldHave[nodeId] || node.readinessMax) {
 						allPeersMeetRequisite = false
 						break
 					}
@@ -109,27 +110,33 @@ func (router *Router) startRebalancer() {
 		}
 		router.peerMutex.RUnlock()
 
-		if !router.maxReadiness && (shouldJumpToMax || increment) {
+		if !router.readinessMax && (shouldJumpToMax || increment) {
 			// increase readiness
 			proposedIncrementReadiness, proposedIncrementMaxReadiness := router.searchPeersForNextDevice()
-			fmt.Printf("%d Increment: Changing readiness to %016x MAX:%v\n", router.ordinal, proposedIncrementReadiness, proposedIncrementMaxReadiness)
-			router.changeReadinessTo(true, proposedIncrementReadiness, proposedIncrementMaxReadiness)
+			if proposedIncrementMaxReadiness {
+				fmt.Printf("%d Increment: Changing readiness to MAX\n", router.ordinal)
+			} else {
+				fmt.Printf("%d Increment: Changing readiness to ∀ <= %s\n", router.ordinal, strconv.Quote(proposedIncrementReadiness))
+			}
+			router.changeReadinessTo(true, proposedIncrementReadiness, true, proposedIncrementMaxReadiness)
 		} else if decrement {
 			// decrease readiness
-			fmt.Printf("%d Decrement: Changing readiness to %016x\n", router.ordinal, proposedDecrementReadiness)
-			router.changeReadinessTo(false, proposedDecrementReadiness, false)
+			fmt.Printf("%d Decrement: Changing readiness to ∀ < %s\n", router.ordinal, strconv.Quote(proposedDecrementReadiness))
+			router.changeReadinessTo(false, proposedDecrementReadiness, false, false)
 
 			// after readiness is decreased, kick out any devices that no longer belong on this node
 			router.deviceMutex.Lock()
 			originalDeviceCount := uint32(len(router.devices))
-			devicesToMove := make(map[uint64]*deviceData)
-			for deviceId, device := range router.devices {
-				//for every device that no longer belongs on this node
-				if deviceId >= router.readiness && !router.maxReadiness {
-					fmt.Printf("Will migrate device %016x\n", deviceId)
-					//release and notify that it's moved
-					devicesToMove[deviceId] = device
-					delete(router.devices, deviceId)
+			devicesToMove := make(map[string]*deviceData)
+			if !router.readinessMax {
+				for deviceId, device := range router.devices {
+					//for every device that no longer belongs on this node
+					if deviceId > router.readiness || (deviceId == router.readiness && !router.readyForEqual) {
+						fmt.Printf("Will migrate device %s\n", strconv.Quote(deviceId))
+						//release and notify that it's moved
+						devicesToMove[deviceId] = device
+						delete(router.devices, deviceId)
+					}
 				}
 			}
 			router.deviceMutex.Unlock()
@@ -148,7 +155,7 @@ func (router *Router) startRebalancer() {
 	}
 }
 
-func (router *Router) searchPeersForNextDevice() (uint64, bool) {
+func (router *Router) searchPeersForNextDevice() (string, bool) {
 	router.peerMutex.Lock()
 	toNotify := make(map[uint32]peer.PeerClient, len(router.peers))
 	for nodeId, node := range router.peers {
@@ -159,15 +166,16 @@ func (router *Router) searchPeersForNextDevice() (uint64, bool) {
 	router.peerMutex.Unlock()
 
 	// keep nodes informed on how ready we are
-	next := uint64(math.MaxUint64)
+	next := ""
 	have := false
 	first, isOnlyDeviceToMigrate := true, false
 	for _, client := range toNotify {
 		// inform peers that we're ready for devices
 		resp, err := client.NextDevice(router.ctx, &peer.NextDeviceRequest{
-			Ordinal:      router.ordinal,
-			Readiness:    router.readiness,
-			MaxReadiness: router.maxReadiness})
+			Ordinal:       router.ordinal,
+			Readiness:     []byte(router.readiness),
+			ReadyForEqual: router.readyForEqual,
+			ReadinessMax:  router.readinessMax})
 		if err != nil {
 			fmt.Println(err)
 		} else {
@@ -177,20 +185,18 @@ func (router *Router) searchPeersForNextDevice() (uint64, bool) {
 				if first {
 					first = false
 					isOnlyDeviceToMigrate = resp.Last
+					next = string(resp.Device)
 				} else {
 					isOnlyDeviceToMigrate = false
-				}
-				if resp.Device <= next {
-					next = math.MaxUint64
-					if resp.Device != math.MaxUint64 {
-						next = resp.Device + 1
+					if string(resp.Device) < next {
+						next = string(resp.Device)
 					}
 				}
 			}
 		}
 	}
 	if isOnlyDeviceToMigrate {
-		next = math.MaxUint64
+		next = ""
 	}
 	return next, !have || isOnlyDeviceToMigrate
 }
@@ -198,16 +204,16 @@ func (router *Router) searchPeersForNextDevice() (uint64, bool) {
 // changeReadinessTo handles the complexity of changing readiness
 // readiness must be updated then broadcast when increasing (start accepting requests, then have other nodes start sending requests)
 // but it must be broadcast then updated when decreasing (have other nodes stop sending requests, then stop accepting requests)
-// in addition, when decreasing from maxReadiness, a peer may reject the request, in which case other peers must be reverted
+// in addition, when decreasing from readinessMax, a peer may reject the request, in which case other peers must be reverted
 // (this is to ensure that at least one node always has maximum readiness, so that at least one node can handle any request)
-func (router *Router) changeReadinessTo(increase bool, readiness uint64, maxReadiness bool) {
+func (router *Router) changeReadinessTo(increase bool, readiness string, readyForEqual, readinessMax bool) {
 	router.peerMutex.Lock()
 	if increase {
 		// change which requests we will accept locally
-		router.readiness, router.maxReadiness = readiness, maxReadiness
+		router.readiness, router.readyForEqual, router.readinessMax = readiness, readyForEqual, readinessMax
 	} else {
-		// if we are decreasing from maxReadiness, we will need to be able to conditionally reject requests
-		router.decreasingFromMaxReadiness = router.maxReadiness && !maxReadiness
+		// if we are decreasing from readinessMax, we will need to be able to conditionally reject requests
+		router.decreasingFromMaxReadiness = router.readinessMax && !readinessMax
 	}
 
 	toNotify := make([]peer.PeerClient, 0, len(router.peers))
@@ -222,9 +228,10 @@ func (router *Router) changeReadinessTo(increase bool, readiness uint64, maxRead
 	abort, undo := false, 0
 	for i, client := range toNotify {
 		if _, err := client.UpdateReadiness(router.ctx, &peer.ReadinessRequest{
-			Ordinal:      router.ordinal,
-			Readiness:    readiness,
-			MaxReadiness: maxReadiness,
+			Ordinal:       router.ordinal,
+			Readiness:     []byte(readiness),
+			ReadyForEqual: readyForEqual,
+			ReadinessMax:  readinessMax,
 		}); err != nil {
 			if err.Error() == "rpc error: code = Unknown desc = no other nodes exist with max readiness" {
 				abort, undo = true, i
@@ -236,9 +243,10 @@ func (router *Router) changeReadinessTo(increase bool, readiness uint64, maxRead
 	// if aborted, revert notified peers
 	for _, client := range toNotify[0:undo] {
 		if _, err := client.UpdateReadiness(router.ctx, &peer.ReadinessRequest{
-			Ordinal:      router.ordinal,
-			Readiness:    router.readiness,
-			MaxReadiness: router.maxReadiness,
+			Ordinal:       router.ordinal,
+			Readiness:     []byte(router.readiness),
+			ReadyForEqual: readyForEqual,
+			ReadinessMax:  router.readinessMax,
 		}); err != nil {
 			fmt.Println(err)
 		}
@@ -249,7 +257,7 @@ func (router *Router) changeReadinessTo(increase bool, readiness uint64, maxRead
 		router.peerMutex.Lock()
 		if !increase && !abort {
 			// change which requests we will accept locally
-			router.readiness, router.maxReadiness = readiness, maxReadiness
+			router.readiness, router.readyForEqual, router.readinessMax = readiness, readyForEqual, readinessMax
 		}
 		if router.decreasingFromMaxReadiness {
 			router.decreasingFromMaxReadiness = false

@@ -2,12 +2,12 @@ package router
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/kent-h/stateful-router/protos/test"
 	"google.golang.org/grpc"
-	"math"
 	"math/rand"
 	"net"
 	"sync"
@@ -24,32 +24,13 @@ func init() {
 }
 
 // the device w/ UUID 0 is a special case
-func TestRoutingServiceDevice0(t *testing.T) {
+func TestRoutingServiceDeviceMin(t *testing.T) {
 	ss, clients := setup(3)
 	defer teardown(clients)
 
 	// create device w/ UUID 0
 	randomClient := rand.Intn(len(clients))
-	sendTestRequest(t, clients, randomClient, 0)
-
-	if err := ss.waitForMigrationToStabilize(t); err != nil {
-		t.Error(err)
-		return
-	}
-
-	if err := verifyDeviceCounts(clients, 1); err != nil {
-		t.Error(err)
-		return
-	}
-}
-
-func TestRoutingServiceDeviceMAX(t *testing.T) {
-	ss, clients := setup(5)
-	defer teardown(clients)
-
-	// create device w/ UUID MAX
-	randomClient := rand.Intn(len(clients))
-	sendTestRequest(t, clients, randomClient, math.MaxUint64)
+	sendTestRequest(t, clients, randomClient, "")
 
 	if err := ss.waitForMigrationToStabilize(t); err != nil {
 		t.Error(err)
@@ -70,8 +51,33 @@ func TestRoutingServiceSingleCore(t *testing.T) {
 	for i := 1; i <= totalDevices; i++ {
 		// create device
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
+		deviceId := fmt.Sprintf("%08x%08x", rand.Uint32(), uint64(i))
 		sendTestRequest(t, clients, randomClient, deviceId)
+
+		if err := ss.waitForMigrationToStabilize(t); err != nil {
+			t.Error(err)
+			return
+		}
+
+		if err := verifyDeviceCounts(clients, i); err != nil {
+			t.Error(err)
+			return
+		}
+	}
+}
+
+func TestRoutingServiceSequentialIDs(t *testing.T) {
+	totalDevices := 30
+	totalNodes := 3
+	ss, clients := setup(totalNodes)
+	defer teardown(clients)
+
+	for i := 1; i <= totalDevices; i++ {
+		// create device
+		randomClient := rand.Intn(len(clients))
+		var deviceId [4]byte
+		binary.BigEndian.PutUint32(deviceId[:], uint32(i))
+		sendTestRequest(t, clients, randomClient, string(deviceId[:]))
 
 		if err := ss.waitForMigrationToStabilize(t); err != nil {
 			t.Error(err)
@@ -94,7 +100,7 @@ func TestRoutingServiceSerializedAdd(t *testing.T) {
 	for i := 1; i <= totalDevices; i++ {
 		// create device
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
+		deviceId := fmt.Sprintf("%08x%08x", rand.Uint32(), uint64(i))
 		sendTestRequest(t, clients, randomClient, deviceId)
 
 		if err := ss.waitForMigrationToStabilize(t); err != nil {
@@ -118,7 +124,7 @@ func TestRoutingServiceParallelAdd(t *testing.T) {
 	// create devices
 	for i := 0; i < totalDevices; i++ {
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
+		deviceId := fmt.Sprintf("%08x%08x", rand.Uint32(), uint64(i))
 		go sendTestRequest(t, clients, randomClient, deviceId)
 	}
 
@@ -143,7 +149,7 @@ func TestRoutingServiceManyNodes(t *testing.T) {
 		// create devices in groups of 10
 		for j := 0; j < 10; j++ {
 			randomClient := rand.Intn(len(clients))
-			deviceId := uint64(rand.Uint32())<<32 | uint64(i)
+			deviceId := fmt.Sprintf("%08x%08x", rand.Uint32(), uint64(i))
 			sendTestRequest(t, clients, randomClient, deviceId)
 			i++
 		}
@@ -169,7 +175,7 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 	// create devices
 	for i := 0; i < totalDevices; i++ {
 		randomClient := rand.Intn(len(clients))
-		deviceId := uint64(rand.Uint32())<<32 | uint64(i)
+		deviceId := fmt.Sprintf("%08x%08x", rand.Uint32(), uint64(i))
 		sendTestRequest(t, clients, randomClient, deviceId)
 	}
 
@@ -195,7 +201,7 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 
 func setup(nodes int) (*dummyStatefulServer, []*dummyStatefulServerProxy) {
 	// fake local DB
-	ss := &dummyStatefulServer{deviceOwner: make(map[uint64]uint32)}
+	ss := &dummyStatefulServer{deviceOwner: make(map[string]uint32)}
 
 	// setup clients
 	clients := make([]*dummyStatefulServerProxy, nodes)
@@ -217,9 +223,9 @@ func teardown(clients []*dummyStatefulServerProxy) {
 	}
 }
 
-func sendTestRequest(t *testing.T, clients []*dummyStatefulServerProxy, client int, device uint64) {
+func sendTestRequest(t *testing.T, clients []*dummyStatefulServerProxy, client int, device string) {
 	if _, err := clients[client].Test(context.Background(), &test.TestRequest{
-		Device: device,
+		Device: []byte(device),
 	}); err != nil {
 		t.Error(err)
 	}
@@ -291,14 +297,14 @@ func (ss *dummyStatefulServerProxy) stop() {
 	ss.server.Stop()
 }
 
-func (ss *dummyStatefulServerProxy) Load(ctx context.Context, device uint64) error {
+func (ss *dummyStatefulServerProxy) Load(ctx context.Context, device string) error {
 	return ss.ss.Load(ctx, device, ss.ordinal)
 }
-func (ss *dummyStatefulServerProxy) Unload(device uint64) {
+func (ss *dummyStatefulServerProxy) Unload(device string) {
 	ss.ss.Unload(device, ss.ordinal)
 }
 func (ss *dummyStatefulServerProxy) Test(ctx context.Context, r *test.TestRequest) (*empty.Empty, error) {
-	if mutex, cc, forward, err := ss.router.Locate(r.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(string(r.Device)); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
 		return test.NewTestClient(cc).Test(ctx, r)
@@ -318,12 +324,12 @@ type dummyStatefulServer struct {
 
 	fail bool
 
-	deviceOwner map[uint64]uint32
+	deviceOwner map[string]uint32
 
 	lastRequestTime time.Time
 }
 
-func (ss *dummyStatefulServer) Load(ctx context.Context, device uint64, ordinal uint32) error {
+func (ss *dummyStatefulServer) Load(ctx context.Context, device string, ordinal uint32) error {
 	ss.mutex.Lock()
 	defer ss.mutex.Unlock()
 
@@ -336,7 +342,7 @@ func (ss *dummyStatefulServer) Load(ctx context.Context, device uint64, ordinal 
 	ss.deviceOwner[device] = ordinal
 	return nil
 }
-func (ss *dummyStatefulServer) Unload(device uint64, ordinal uint32) {
+func (ss *dummyStatefulServer) Unload(device string, ordinal uint32) {
 	ss.mutex.Lock()
 	defer ss.mutex.Unlock()
 
@@ -354,7 +360,7 @@ func (ss *dummyStatefulServer) Test(ctx context.Context, r *test.TestRequest, or
 
 	ss.lastRequestTime = time.Now()
 	ss.requestCount++
-	if owner, have := ss.deviceOwner[r.Device]; !have || owner != ordinal {
+	if owner, have := ss.deviceOwner[string(r.Device)]; !have || owner != ordinal {
 		panic("device should be owned when Test() is called")
 	}
 	if ss.fail {

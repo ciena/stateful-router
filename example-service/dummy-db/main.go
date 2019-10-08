@@ -28,7 +28,7 @@ func main() {
 	}
 	s := grpc.NewServer(grpc.KeepaliveParams(keepalive.ServerParameters{Time: time.Second * 2, Timeout: time.Second * 2}))
 	db.RegisterDBServer(s, &dbConnection{
-		devices: make(map[uint64]*deviceData),
+		devices: make(map[string]*deviceData),
 	})
 	fmt.Println("Listening on", addr)
 	if err := s.Serve(lis); err != nil {
@@ -39,7 +39,7 @@ func main() {
 type dbConnection struct {
 	mutex     sync.Mutex
 	lockIDCtr uint64
-	devices   map[uint64]*deviceData
+	devices   map[string]*deviceData
 }
 
 type deviceData struct {
@@ -59,7 +59,7 @@ func (i *dbConnection) nextLockID() uint64 {
 	return ret
 }
 
-func (i dbConnection) getDevice(id uint64) *deviceData {
+func (i dbConnection) getDevice(id string) *deviceData {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 

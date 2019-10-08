@@ -10,12 +10,12 @@ service Stateful {
 }
 
 message SetDataRequest {
-  uint64 device = 1;
+  string device = 1;
   bytes data = 2;
 }
 
 message GetDataRequest {
-  uint64 device = 1;
+  string device = 1;
 }
 
 message GetDataResponse {

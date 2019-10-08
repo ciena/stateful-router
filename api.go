@@ -8,11 +8,11 @@ import (
 )
 
 type DeviceLoader interface {
-	Load(ctx context.Context, deviceId uint64) error
-	Unload(deviceId uint64)
+	Load(ctx context.Context, deviceId string) error
+	Unload(deviceId string)
 }
 
-func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func()) (*Router) {
+func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func()) *Router {
 	ctx, ctxCancelFunc := context.WithCancel(context.Background())
 	router := &Router{
 		ordinal:       ordinal,
@@ -20,7 +20,7 @@ func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader Devic
 		ctx:           ctx,
 		ctxCancelFunc: ctxCancelFunc,
 		peers:         make(map[uint32]*node),
-		devices:       make(map[uint64]*deviceData),
+		devices:       make(map[string]*deviceData),
 		deviceCountEventData: deviceCountEventData{
 			updateComplete: make(chan struct{}),
 			updatingPeers:  make(map[uint32]uint32),
@@ -61,7 +61,7 @@ func (router *Router) Stop() {
 // this should be called when a device has been, or should be,
 // unloaded **from the local node only** due to external circumstance
 // (device lock lost, device deleted, inactivity timeout, etc.)
-func (router *Router) UnloadDevice(deviceId uint64) {
+func (router *Router) UnloadDevice(deviceId string) {
 	router.deviceMutex.Lock()
 	device, have := router.devices[deviceId]
 	delete(router.devices, deviceId)
@@ -76,6 +76,6 @@ func (router *Router) UnloadDevice(deviceId uint64) {
 // Locate returns a processor for the given device,
 // to either handle the request locally,
 // or forward it on to the appropriate peer
-func (router *Router) Locate(deviceId uint64) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+func (router *Router) Locate(deviceId string) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
 	return router.locate(deviceId, router.deviceCountChanged)
 }

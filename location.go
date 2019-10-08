@@ -1,5 +1,10 @@
 package router
 
+import (
+	"crypto/md5"
+	"encoding/binary"
+)
+
 // returns a list of nodes from 0 to highestKnownOrdinal, randomly but deterministically sorted based on the id
 // the list is stable even with changes to highestKnownOrdinal
 // (in other words, changing highestKnownOrdinal will add/remove entries, but will never reorder them)
@@ -13,14 +18,19 @@ func GetLocationArray(id uint64, highestKnownOrdinal uint32) []uint32 {
 	return array
 }
 
-func BestNode(id uint64, ordinal uint32, nodes map[uint32]struct{}) uint32 {
+func GetLocationArrayString(id string, highestKnownOrdinal uint32) []uint32 {
+	hash := md5.Sum([]byte(id))
+	return GetLocationArray(binary.BigEndian.Uint64(hash[:8]), highestKnownOrdinal)
+}
+
+func BestNode(id string, ordinal uint32, nodes map[uint32]struct{}) uint32 {
 	highest := ordinal
 	for node := range nodes {
 		if node > highest {
 			highest = node
 		}
 	}
-	array := GetLocationArray(id, highest)
+	array := GetLocationArrayString(id, highest)
 	for {
 		if _, have := nodes[array[0]]; have || array[0] == ordinal {
 			return array[0]
@@ -29,14 +39,14 @@ func BestNode(id uint64, ordinal uint32, nodes map[uint32]struct{}) uint32 {
 	}
 }
 
-func BestOf(id uint64, nodes map[uint32]struct{}) uint32 {
+func BestOf(id string, nodes map[uint32]struct{}) uint32 {
 	var highest uint32
 	for node := range nodes {
 		if node > highest {
 			highest = node
 		}
 	}
-	array := GetLocationArray(id, highest)
+	array := GetLocationArrayString(id, highest)
 	for {
 		if _, have := nodes[array[0]]; have {
 			return array[0]

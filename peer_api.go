@@ -5,7 +5,6 @@ import (
 	"errors"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/kent-h/stateful-router/protos/peer"
-	"math"
 )
 
 type peerApi struct {
@@ -34,28 +33,31 @@ func (router peerApi) NextDevice(ctx context.Context, request *peer.NextDeviceRe
 	router.deviceMutex.RLock()
 	defer router.deviceMutex.RUnlock()
 
-	migrateNext := uint64(math.MaxUint64)
+	migrateNext := ""
 	found := false
 	first, isOnlyDeviceToMigrate := true, false
-	for deviceId := range router.devices {
-		// for every device that belongs on the other node
-		if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
-			// find the lowest device that's > other.readiness
-			if deviceId >= request.Readiness && !request.MaxReadiness {
-				found = true
-				if first {
-					first = false
-					isOnlyDeviceToMigrate = true
-				} else {
-					isOnlyDeviceToMigrate = false
-				}
-				if deviceId < migrateNext {
-					migrateNext = deviceId
+	if !request.ReadinessMax {
+		for deviceId := range router.devices {
+			// for every device that belongs on the other node
+			if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
+				// find the lowest device that's > other.readiness
+				if deviceId > string(request.Readiness) || (deviceId == string(request.Readiness) && !request.ReadyForEqual) {
+					found = true
+					if first {
+						first = false
+						migrateNext = deviceId
+						isOnlyDeviceToMigrate = true
+					} else {
+						isOnlyDeviceToMigrate = false
+						if deviceId < migrateNext {
+							migrateNext = deviceId
+						}
+					}
 				}
 			}
 		}
 	}
-	return &peer.NextDeviceResponse{Has: found, Device: migrateNext, Last: isOnlyDeviceToMigrate}, nil
+	return &peer.NextDeviceResponse{Has: found, Device: []byte(migrateNext), Last: isOnlyDeviceToMigrate}, nil
 }
 
 func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.ReadinessRequest) (*empty.Empty, error) {
@@ -63,12 +65,12 @@ func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.Readine
 	recalculateReadiness := false
 	node := router.peers[request.Ordinal]
 	// if decreasing from max readiness
-	if node.maxReadiness && !request.MaxReadiness {
+	if node.readinessMax && !request.ReadinessMax {
 		// complain if no other node exists with max readiness
-		if !router.maxReadiness || router.decreasingFromMaxReadiness {
+		if !router.readinessMax || router.decreasingFromMaxReadiness {
 			foundMax := false
 			for nodeId, node := range router.peers {
-				if nodeId != request.Ordinal && node.maxReadiness {
+				if nodeId != request.Ordinal && node.readinessMax {
 					foundMax = true
 					break
 				}
@@ -80,18 +82,18 @@ func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.Readine
 		}
 	}
 
-	recalculateReadiness = node.readiness != request.Readiness || node.maxReadiness != request.MaxReadiness
-	node.readiness, node.maxReadiness = request.Readiness, request.MaxReadiness
+	recalculateReadiness = node.readiness != string(request.Readiness) || node.readyForEqual != request.ReadyForEqual || node.readinessMax != request.ReadinessMax
+	node.readiness, node.readyForEqual, node.readinessMax = string(request.Readiness), request.ReadyForEqual, request.ReadinessMax
 	router.peerMutex.Unlock()
 
 	router.deviceMutex.Lock()
 	originalDeviceCount := uint32(len(router.devices))
-	devicesToMove := make(map[uint64]*deviceData)
+	devicesToMove := make(map[string]*deviceData)
 	for deviceId, device := range router.devices {
 		//for every device that belongs on the other node
 		if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
 			// if the other node is ready for this device
-			if deviceId < request.Readiness {
+			if deviceId < string(request.Readiness) || (deviceId == string(request.Readiness) && request.ReadyForEqual) {
 				//release and notify that it's moved
 				devicesToMove[deviceId] = device
 				delete(router.devices, deviceId)
@@ -112,7 +114,7 @@ func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.Readine
 // Handoff is just basically hint to load a device, so we'll do normal loading/locking
 func (router peerApi) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
 	var peerUpdateComplete chan struct{}
-	if mutex, remoteHandler, forward, err := router.locate(request.Device, func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
+	if mutex, remoteHandler, forward, err := router.locate(string(request.Device), func() { peerUpdateComplete = router.deviceCountPeerChanged(request.Ordinal, request.Devices) }); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
 		return peer.NewPeerClient(remoteHandler).Handoff(ctx, request)
