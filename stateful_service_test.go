@@ -272,7 +272,8 @@ type dummyStatefulServerProxy struct {
 
 func (ss *dummyStatefulServerProxy) start(ordinal uint32, peerDNSFormat, address string) {
 	// create routing instance
-	ss.router, ss.server = New(ordinal, peerDNSFormat, ss, nil)
+	ss.server = grpc.NewServer(GRPCSettings()...)
+	ss.router = New(ss.server, ordinal, peerDNSFormat, ss, nil)
 	// register self
 	test.RegisterTestServer(ss.server, ss)
 	// listen for requests

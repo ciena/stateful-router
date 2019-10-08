@@ -39,15 +39,15 @@
 			"revisionTime": "2019-05-17T06:12:10Z"
 		},
 		{
-			"checksumSHA1": "emD8XFsD4dF2ovc54gb9i5dJglg=",
+			"checksumSHA1": "Tf80r7n6Hhg1S+6F137t8kX+XWo=",
 			"path": "github.com/kent-h/stateful-router",
-			"revision": "77167d7bbf048cf3872e5dd2752de0c115a11555",
+			"revision": "981110188d46a667257f5f02c98633e324f50a49",
 			"revisionTime": "2019-10-07T21:17:11Z"
 		},
 		{
 			"checksumSHA1": "xLH/8QB31f1ROQzafWk1HClbakg=",
 			"path": "github.com/kent-h/stateful-router/protos/peer",
-			"revision": "b965ca03bb822da5df15eed471e38873fc6d8576",
+			"revision": "981110188d46a667257f5f02c98633e324f50a49",
 			"revisionTime": "2019-10-07T21:17:11Z"
 		},
 		{
@@ -87,7 +87,7 @@
 			"revisionTime": "2019-06-20T19:42:36Z"
 		},
 		{
-			"checksumSHA1": "qwSBUYPsGjUUITELbbB6SWY8DMw=",
+			"checksumSHA1": "bEZMKCJvwj7UGtZtuQjx1CYlYvo=",
 			"path": "golang.org/x/sys/unix",
 			"revision": "0ad05ae3009d6413d3363aa09b350b2ec37daf09",
 			"revisionTime": "2019-04-10T21:54:27Z"
@@ -105,13 +105,13 @@
 			"revisionTime": "2018-12-15T17:52:45Z"
 		},
 		{
-			"checksumSHA1": "xNDxEBIuYd45U6bb1ZBfVQQTMIo=",
+			"checksumSHA1": "vv9EDuekZgHxFbh+0jJhB7jLZXY=",
 			"path": "golang.org/x/text/unicode/bidi",
 			"revision": "342b2e1fbaa52c93f31447ad2c6abc048c63e475",
 			"revisionTime": "2018-12-15T17:52:45Z"
 		},
 		{
-			"checksumSHA1": "OE61CWKF0KBo5hZEMrfhCkQEKg0=",
+			"checksumSHA1": "8fzd6fnxrstdNSVg+Srhf1nKgek=",
 			"path": "golang.org/x/text/unicode/norm",
 			"revision": "342b2e1fbaa52c93f31447ad2c6abc048c63e475",
 			"revisionTime": "2018-12-15T17:52:45Z"

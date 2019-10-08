@@ -50,7 +50,8 @@ func New(ordinal uint32, peerDNSFormat, address string) *StatefulService {
 
 func (ss *StatefulService) start(ordinal uint32, peerDNSFormat, address string) {
 	// create routing instance
-	ss.router, ss.server = router.New(ordinal, peerDNSFormat, ss, nil)
+	ss.server = grpc.NewServer(router.GRPCSettings()...)
+	ss.router = router.New(ss.server, ordinal, peerDNSFormat, ss, nil)
 	// register self
 	stateful.RegisterStatefulServer(ss.server, ss)
 	// listen for requests

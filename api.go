@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/kent-h/stateful-router/protos/peer"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 	"time"
 )
 
@@ -13,7 +12,7 @@ type DeviceLoader interface {
 	Unload(deviceId uint64)
 }
 
-func New(ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func()) (*Router, *grpc.Server) {
+func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func()) (*Router) {
 	ctx, ctxCancelFunc := context.WithCancel(context.Background())
 	router := &Router{
 		ordinal:       ordinal,
@@ -49,19 +48,8 @@ func New(ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallbac
 		router.startRebalancer()
 	})
 
-	// new grpc server
-	server := grpc.NewServer(grpc.KeepaliveParams(
-		keepalive.ServerParameters{
-			Time:    keepaliveTime,
-			Timeout: keepaliveTimeout,
-		}), grpc.KeepaliveEnforcementPolicy(
-		keepalive.EnforcementPolicy{
-			MinTime:             keepaliveTime / 2,
-			PermitWithoutStream: true,
-		}))
-
 	peer.RegisterPeerServer(server, peerApi{router})
-	return router, server
+	return router
 }
 
 func (router *Router) Stop() {

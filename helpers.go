@@ -2,10 +2,27 @@ package router
 
 import (
 	"fmt"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"os"
 	"regexp"
 	"strconv"
 )
+
+func GRPCSettings() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.KeepaliveParams(
+			keepalive.ServerParameters{
+				Time:    keepaliveTime,
+				Timeout: keepaliveTimeout,
+			}),
+		grpc.KeepaliveEnforcementPolicy(
+			keepalive.EnforcementPolicy{
+				MinTime:             keepaliveTime / 2,
+				PermitWithoutStream: true,
+			}),
+	}
+}
 
 func MustParseOrdinal(ordinalStr string) uint32 {
 	if ordinalStr == "" {
