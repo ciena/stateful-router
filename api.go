@@ -77,5 +77,9 @@ func (router *Router) UnloadDevice(deviceId string) {
 // to either handle the request locally,
 // or forward it on to the appropriate peer
 func (router *Router) Locate(deviceId string) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
-	return router.locate(deviceId, router.deviceCountChanged)
+	return router.locate(deviceId, router.deviceCountChanged, router.loader.Load)
+}
+
+func (router *Router) LocateWithLoadFunc(deviceId string, loadFunc func(ctx context.Context, deviceId string) error) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+	return router.locate(deviceId, router.deviceCountChanged, loadFunc)
 }

@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"sync"
-	"time"
 )
 
 type StatefulService struct {
@@ -86,9 +85,6 @@ func (ss *StatefulService) Load(ctx context.Context, device string) error {
 	ss.localState[device] = &state{lock: response.LockId, data: dataResponse.Data}
 	ss.mutex.Unlock()
 
-	// demonstrate time delay
-	time.Sleep(time.Second)
-
 	return nil
 }
 
@@ -98,9 +94,6 @@ func (ss *StatefulService) Unload(device string) {
 	state := ss.localState[device]
 	delete(ss.localState, device)
 	ss.mutex.Unlock()
-
-	// demonstrate time delay
-	time.Sleep(time.Second)
 
 	// flush data to db
 	ss.dbClient.SetData(context.Background(), &db.SetDataRequest{Device: device, Lock: state.lock, Data: state.data})

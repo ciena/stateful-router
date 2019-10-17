@@ -41,14 +41,14 @@
 		{
 			"checksumSHA1": "Z8vP73wD4JCKE8gGb7FPksBplzc=",
 			"path": "github.com/kent-h/stateful-router",
-			"revision": "f76930178201a082fd215291cc988ef527265814",
-			"revisionTime": "2019-10-08T18:42:17Z"
+			"revision": "604cb83dc239a0e7c74f013ce62a8e5b8dc68c03",
+			"revisionTime": "2019-10-08T23:52:22Z"
 		},
 		{
 			"checksumSHA1": "qlVe6O8NSCuY8Krz4EmUVnCBlak=",
 			"path": "github.com/kent-h/stateful-router/protos/peer",
-			"revision": "f76930178201a082fd215291cc988ef527265814",
-			"revisionTime": "2019-10-08T18:42:17Z"
+			"revision": "604cb83dc239a0e7c74f013ce62a8e5b8dc68c03",
+			"revisionTime": "2019-10-08T23:52:22Z"
 		},
 		{
 			"checksumSHA1": "pCY4YtdNKVBYRbNvODjx8hj0hIs=",

@@ -137,6 +137,9 @@ func (i dbConnection) SetData(ctx context.Context, request *db.SetDataRequest) (
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
+	// demonstrate time delay
+	time.Sleep(time.Second)
+
 	if device.lockID == request.Lock {
 		device.data = request.Data
 		return &empty.Empty{}, nil
@@ -152,6 +155,9 @@ func (i dbConnection) GetData(ctx context.Context, request *db.GetDataRequest) (
 
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
+
+	// demonstrate time delay
+	time.Sleep(time.Second)
 
 	if device.lockID == request.Lock {
 		return &db.GetDataResponse{Data: device.data}, nil

@@ -241,7 +241,7 @@ func (router *Router) bestOfUnsafe(deviceId string) (uint32, error) {
 	return BestOf(deviceId, possibleNodes), nil
 }
 
-func (router *Router) locate(deviceId string, deviceCountChangedCallback func()) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+func (router *Router) locate(deviceId string, deviceCountChangedCallback func(), loadFunc func(ctx context.Context, deviceId string) error) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
 	router.deviceMutex.RLock()
 	// if we have the device loaded, just process the request locally
 	if device, have := router.devices[deviceId]; have {
@@ -277,7 +277,7 @@ func (router *Router) locate(deviceId string, deviceCountChangedCallback func())
 	if _, have := router.devices[deviceId]; have {
 		// some other thread loaded the device since we last checked
 		router.deviceMutex.Unlock()
-		return router.locate(deviceId, deviceCountChangedCallback)
+		return router.locate(deviceId, deviceCountChangedCallback, loadFunc)
 	}
 	device := &deviceData{
 		loadingDone: make(chan struct{}),
@@ -289,7 +289,7 @@ func (router *Router) locate(deviceId string, deviceCountChangedCallback func())
 
 	fmt.Printf("Loading device %s\n", strconv.Quote(deviceId))
 	// have the implementation lock & load the device
-	if err := router.loader.Load(router.ctx, deviceId); err != nil {
+	if err := loadFunc(router.ctx, deviceId); err != nil {
 		// failed to load the device, release it
 		router.deviceMutex.Lock()
 		if dev, have := router.devices[deviceId]; have && dev == device {
