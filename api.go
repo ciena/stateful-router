@@ -62,6 +62,10 @@ func (router *Router) Stop() {
 // unloaded **from the local node only** due to external circumstance
 // (device lock lost, device deleted, inactivity timeout, etc.)
 func (router *Router) UnloadDevice(deviceId string) {
+	router.UnloadDeviceWithUnloadFunc(deviceId, router.loader.Unload)
+}
+
+func (router *Router) UnloadDeviceWithUnloadFunc(deviceId string, unloadFunc func(deviceId string)) {
 	router.deviceMutex.Lock()
 	device, have := router.devices[deviceId]
 	delete(router.devices, deviceId)
@@ -69,7 +73,7 @@ func (router *Router) UnloadDevice(deviceId string) {
 
 	if have {
 		router.deviceCountChanged()
-		router.unloadDevice(deviceId, device)
+		router.unloadDevice(deviceId, device, unloadFunc)
 	}
 }
 

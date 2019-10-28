@@ -194,7 +194,7 @@ func (router *Router) migrateDevices(devicesToMove map[string]*deviceData, origi
 }
 
 func (router *Router) migrateDevice(deviceId string, device *deviceData, devices uint32) {
-	router.unloadDevice(deviceId, device)
+	router.unloadDevice(deviceId, device, router.loader.Unload)
 
 	peerApi := peerApi{router}
 	if _, err := peerApi.Handoff(router.ctx, &peer.HandoffRequest{
@@ -202,19 +202,20 @@ func (router *Router) migrateDevice(deviceId string, device *deviceData, devices
 		Ordinal: router.ordinal,
 		Devices: devices,
 	}); err != nil {
-		fmt.Println(err)
+		fmt.Println(fmt.Errorf("error during handoff: %s", err))
 	}
 }
 
-func (router *Router) unloadDevice(deviceId string, device *deviceData) {
+func (router *Router) unloadDevice(deviceId string, device *deviceData, unloadFunc func(deviceId string)) {
 	// ensure the device has actually finished loading
 	<-device.loadingDone
 	if device.loadingError == nil {
 		// wait for all in-progress requests to drain
 		device.mutex.Lock()
+		defer device.mutex.Unlock()
+
 		fmt.Printf("Unloading device %s\n", strconv.Quote(deviceId))
-		router.loader.Unload(deviceId)
-		device.mutex.Unlock()
+		unloadFunc(deviceId)
 	}
 }
 
