@@ -170,7 +170,7 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 	totalDevices := 100
 	finalNodes := 7
 	ss, clients := setup(1)
-	defer teardown(clients)
+	defer func() { teardown(clients) }()
 
 	// create devices
 	for i := 0; i < totalDevices; i++ {
@@ -186,6 +186,37 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 		clients = append(clients, client)
 
 		time.Sleep(waitReadyTime + assumePropagationDelay)
+
+		if err := ss.waitForMigrationToStabilize(t); err != nil {
+			t.Error(err)
+			return
+		}
+
+		if err := verifyDeviceCounts(clients, totalDevices); err != nil {
+			t.Error(err)
+			return
+		}
+	}
+}
+
+func TestRoutingServiceShutdownNodes(t *testing.T) {
+	totalDevices := 100
+	totalNodes := 7
+	ss, clients := setup(totalNodes)
+	defer teardown(clients)
+
+	// create devices
+	for i := 0; i < totalDevices; i++ {
+		randomClient := rand.Intn(len(clients))
+		deviceId := fmt.Sprintf("%08x%08x", rand.Uint32(), uint64(i))
+		sendTestRequest(t, clients, randomClient, deviceId)
+	}
+
+	for len(clients) > 1 {
+		// add a client
+		last := len(clients) - 1
+		clients[last].stop()
+		clients = clients[:last]
 
 		if err := ss.waitForMigrationToStabilize(t); err != nil {
 			t.Error(err)

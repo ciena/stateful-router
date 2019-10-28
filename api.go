@@ -14,13 +14,14 @@ type DeviceLoader interface {
 
 func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func()) *Router {
 	ctx, ctxCancelFunc := context.WithCancel(context.Background())
+	handoffAndShutdown := make(chan struct{})
 	router := &Router{
-		ordinal:       ordinal,
-		peerDNSFormat: peerDNSFormat,
-		ctx:           ctx,
-		ctxCancelFunc: ctxCancelFunc,
-		peers:         make(map[uint32]*node),
-		devices:       make(map[string]*deviceData),
+		ordinal:            ordinal,
+		peerDNSFormat:      peerDNSFormat,
+		handoffAndShutdown: handoffAndShutdown,
+		ctx:                ctx,
+		peers:              make(map[uint32]*node),
+		devices:            make(map[string]*deviceData),
 		deviceCountEventData: deviceCountEventData{
 			updateComplete: make(chan struct{}),
 			updatingPeers:  make(map[uint32]uint32),
@@ -45,7 +46,7 @@ func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader Devic
 		if readyCallback != nil {
 			readyCallback()
 		}
-		router.startRebalancer()
+		router.startRebalancer(router.handoffAndShutdown, ctxCancelFunc)
 	})
 
 	peer.RegisterPeerServer(server, peerApi{router})
@@ -53,8 +54,14 @@ func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader Devic
 }
 
 func (router *Router) Stop() {
-	router.ctxCancelFunc()
-	<-router.rebalanceEventHandlerDone
+	router.eventMutex.Lock()
+	if router.handoffAndShutdown != nil {
+		close(router.handoffAndShutdown)
+		router.handoffAndShutdown = nil
+	}
+	router.eventMutex.Unlock()
+
+	<-router.ctx.Done()
 	<-router.deviceCountEventHandlerDone
 }
 

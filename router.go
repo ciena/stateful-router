@@ -56,11 +56,8 @@ type Router struct {
 	// mapping from ordinal to address or DNS entry
 	peerDNSFormat string
 
-	// server accepts requests from peers
-	server *grpc.Server
 	// closed only when the Router is stopping
-	ctx           context.Context
-	ctxCancelFunc context.CancelFunc
+	ctx context.Context
 
 	// readiness and readinessMax indicates which devices (if any) this node doesn't have responsibility for (devices < readiness),
 	// it is owned by (and should only be changed by) the startRebalancer() thread
@@ -82,6 +79,8 @@ type Router struct {
 	eventMutex           sync.Mutex
 	deviceCountEventData deviceCountEventData
 	rebalanceEventData   rebalanceEventData
+	// triggers clean shutdown
+	handoffAndShutdown chan struct{}
 	// when shutting down, startRebalancer() and startStatsNotifier() close these channels
 	deviceCountEventHandlerDone chan struct{}
 	rebalanceEventHandlerDone   chan struct{}
@@ -96,6 +95,7 @@ type node struct {
 	readiness     string // which devices are ready
 	readyForEqual bool
 	readinessMax  bool
+	shuttingDown  bool
 	devices       uint32 // number of devices this node is handling
 }
 
@@ -172,7 +172,7 @@ func (router *Router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32)
 
 			} else {
 				node.connected = false
-				node.readiness, node.readyForEqual, node.readinessMax = "", false, false
+				node.readiness, node.readyForEqual, node.readinessMax, node.shuttingDown = "", false, false, false
 				node.devices = 0
 				router.rebalance()
 				router.peerMutex.Unlock()

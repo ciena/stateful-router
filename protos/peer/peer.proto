@@ -36,6 +36,8 @@ message ReadinessRequest {
   bytes readiness = 2;
   bool ready_for_equal = 3;
   bool readiness_max = 4;
+
+  bool shutting_down = 5;
 }
 
 message StatsRequest {

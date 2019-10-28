@@ -62,8 +62,10 @@ func (router peerApi) NextDevice(ctx context.Context, request *peer.NextDeviceRe
 
 func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.ReadinessRequest) (*empty.Empty, error) {
 	router.peerMutex.Lock()
-	recalculateReadiness := false
 	node := router.peers[request.Ordinal]
+	recalculateReadiness := node.shuttingDown != request.ShuttingDown
+	// no matter what, set the shutting-down state
+	node.shuttingDown = request.ShuttingDown
 	// if decreasing from max readiness
 	if node.readinessMax && !request.ReadinessMax {
 		// complain if no other node exists with max readiness
@@ -77,12 +79,16 @@ func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.Readine
 			}
 			if !foundMax {
 				router.peerMutex.Unlock()
+
+				if recalculateReadiness {
+					router.rebalance()
+				}
 				return &empty.Empty{}, errors.New("no other nodes exist with max readiness")
 			}
 		}
 	}
 
-	recalculateReadiness = node.readiness != string(request.Readiness) || node.readyForEqual != request.ReadyForEqual || node.readinessMax != request.ReadinessMax
+	recalculateReadiness = recalculateReadiness || node.readiness != string(request.Readiness) || node.readyForEqual != request.ReadyForEqual || node.readinessMax != request.ReadinessMax
 	node.readiness, node.readyForEqual, node.readinessMax = string(request.Readiness), request.ReadyForEqual, request.ReadinessMax
 	router.peerMutex.Unlock()
 
