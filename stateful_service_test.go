@@ -17,6 +17,9 @@ import (
 
 const assumePropagationDelay = time.Millisecond * 30
 const assumeStabilizationDelay = time.Millisecond * 100
+const (
+	resourceTypeDevice ResourceType = iota
+)
 
 func init() {
 	//since everything is local, assume connectivity is established within 1s
@@ -25,7 +28,7 @@ func init() {
 
 // the device w/ UUID 0 is a special case
 func TestRoutingServiceDeviceMin(t *testing.T) {
-	ss, clients := setup(3)
+	ss, clients := setup(3, resourceTypeDevice)
 	defer teardown(clients)
 
 	// create device w/ UUID 0
@@ -45,7 +48,7 @@ func TestRoutingServiceDeviceMin(t *testing.T) {
 
 func TestRoutingServiceSingleCore(t *testing.T) {
 	totalDevices := 4
-	ss, clients := setup(1)
+	ss, clients := setup(1, resourceTypeDevice)
 	defer teardown(clients)
 
 	for i := 1; i <= totalDevices; i++ {
@@ -69,7 +72,7 @@ func TestRoutingServiceSingleCore(t *testing.T) {
 func TestRoutingServiceSequentialIDs(t *testing.T) {
 	totalDevices := 30
 	totalNodes := 3
-	ss, clients := setup(totalNodes)
+	ss, clients := setup(totalNodes, resourceTypeDevice)
 	defer teardown(clients)
 
 	for i := 1; i <= totalDevices; i++ {
@@ -94,7 +97,7 @@ func TestRoutingServiceSequentialIDs(t *testing.T) {
 func TestRoutingServiceSerializedAdd(t *testing.T) {
 	totalDevices := 30
 	totalNodes := 3
-	ss, clients := setup(totalNodes)
+	ss, clients := setup(totalNodes, resourceTypeDevice)
 	defer teardown(clients)
 
 	for i := 1; i <= totalDevices; i++ {
@@ -118,7 +121,7 @@ func TestRoutingServiceSerializedAdd(t *testing.T) {
 func TestRoutingServiceParallelAdd(t *testing.T) {
 	totalDevices := 100
 	totalNodes := 3
-	ss, clients := setup(totalNodes)
+	ss, clients := setup(totalNodes, resourceTypeDevice)
 	defer teardown(clients)
 
 	// create devices
@@ -142,7 +145,7 @@ func TestRoutingServiceParallelAdd(t *testing.T) {
 func TestRoutingServiceManyNodes(t *testing.T) {
 	totalDevices := 100
 	totalNodes := 7
-	ss, clients := setup(totalNodes)
+	ss, clients := setup(totalNodes, resourceTypeDevice)
 	defer teardown(clients)
 
 	for i := 0; i < totalDevices; {
@@ -169,7 +172,7 @@ func TestRoutingServiceManyNodes(t *testing.T) {
 func TestRoutingServiceAddNodes(t *testing.T) {
 	totalDevices := 100
 	finalNodes := 7
-	ss, clients := setup(1)
+	ss, clients := setup(1, resourceTypeDevice)
 	defer func() { teardown(clients) }()
 
 	// create devices
@@ -182,7 +185,7 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 	for len(clients) < finalNodes {
 		// add a client
 		client := &dummyStatefulServerProxy{ss: ss}
-		go client.start(uint32(len(clients)), "localhost:5%03d", fmt.Sprintf("localhost:5%03d", len(clients)))
+		client.start(uint32(len(clients)), "localhost:5%03d", fmt.Sprintf("localhost:5%03d", len(clients)), resourceTypeDevice)
 		clients = append(clients, client)
 
 		time.Sleep(waitReadyTime + assumePropagationDelay)
@@ -202,7 +205,7 @@ func TestRoutingServiceAddNodes(t *testing.T) {
 func TestRoutingServiceShutdownNodes(t *testing.T) {
 	totalDevices := 100
 	totalNodes := 7
-	ss, clients := setup(totalNodes)
+	ss, clients := setup(totalNodes, resourceTypeDevice)
 	defer teardown(clients)
 
 	// create devices
@@ -230,7 +233,7 @@ func TestRoutingServiceShutdownNodes(t *testing.T) {
 	}
 }
 
-func setup(nodes int) (*dummyStatefulServer, []*dummyStatefulServerProxy) {
+func setup(nodes int, resourceType ...ResourceType) (*dummyStatefulServer, []*dummyStatefulServerProxy) {
 	// fake local DB
 	ss := &dummyStatefulServer{deviceOwner: make(map[string]uint32)}
 
@@ -238,7 +241,7 @@ func setup(nodes int) (*dummyStatefulServer, []*dummyStatefulServerProxy) {
 	clients := make([]*dummyStatefulServerProxy, nodes)
 	for i := range clients {
 		client := &dummyStatefulServerProxy{ss: ss}
-		go client.start(uint32(i), "localhost:5%03d", fmt.Sprintf("localhost:5%03d", i))
+		client.start(uint32(i), "localhost:5%03d", fmt.Sprintf("localhost:5%03d", i), resourceType...)
 		clients[i] = client
 	}
 
@@ -287,11 +290,11 @@ func verifyDeviceCounts(clients []*dummyStatefulServerProxy, numDevices int) err
 		if i < numDevices%len(clients) {
 			spare = 1
 		}
-		shouldHave, have := numDevices/len(clients)+spare, len(client.router.devices)
+		shouldHave, have := numDevices/len(clients)+spare, len(client.router.resources[resourceTypeDevice].devices)
 		if have != shouldHave {
 			str := fmt.Sprintf("wrong number of devices on core (%d total)\n", numDevices)
 			for i, client := range clients {
-				str += fmt.Sprintln(i, "has", len(client.router.devices), "devices")
+				str += fmt.Sprintln(i, "has", len(client.router.resources[resourceTypeDevice].devices), "devices")
 			}
 			str += fmt.Sprintf("client %d should have %d devices, has %d\n", i, shouldHave, have)
 			return errors.New(str)
@@ -307,10 +310,10 @@ type dummyStatefulServerProxy struct {
 	ss      *dummyStatefulServer
 }
 
-func (ss *dummyStatefulServerProxy) start(ordinal uint32, peerDNSFormat, address string) {
+func (ss *dummyStatefulServerProxy) start(ordinal uint32, peerDNSFormat, address string, resourceType ...ResourceType) {
 	// create routing instance
 	ss.server = grpc.NewServer(GRPCSettings()...)
-	ss.router = New(ss.server, ordinal, peerDNSFormat, ss, nil)
+	ss.router = New(ss.server, ordinal, peerDNSFormat, ss, nil, resourceType...)
 	// register self
 	test.RegisterTestServer(ss.server, ss)
 	// listen for requests
@@ -318,9 +321,11 @@ func (ss *dummyStatefulServerProxy) start(ordinal uint32, peerDNSFormat, address
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
 	}
-	if err := ss.server.Serve(listener); err != nil {
-		panic(fmt.Sprintf("failed to serve: %v", err))
-	}
+	go func() {
+		if err := ss.server.Serve(listener); err != nil {
+			panic(fmt.Sprintf("failed to serve: %v", err))
+		}
+	}()
 }
 
 func (ss *dummyStatefulServerProxy) stop() {
@@ -328,14 +333,14 @@ func (ss *dummyStatefulServerProxy) stop() {
 	ss.server.Stop()
 }
 
-func (ss *dummyStatefulServerProxy) Load(ctx context.Context, device string) error {
+func (ss *dummyStatefulServerProxy) Load(ctx context.Context, _ ResourceType, device string) error {
 	return ss.ss.Load(ctx, device, ss.ordinal)
 }
-func (ss *dummyStatefulServerProxy) Unload(device string) {
+func (ss *dummyStatefulServerProxy) Unload(_ ResourceType, device string) {
 	ss.ss.Unload(device, ss.ordinal)
 }
 func (ss *dummyStatefulServerProxy) Test(ctx context.Context, r *test.TestRequest) (*empty.Empty, error) {
-	if mutex, cc, forward, err := ss.router.Locate(string(r.Device)); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(resourceTypeDevice, string(r.Device)); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
 		return test.NewTestClient(cc).Test(ctx, r)

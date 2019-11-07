@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/kent-h/stateful-router"
-	"github.com/kent-h/stateful-router/example-service"
 	"github.com/kent-h/stateful-router/example-service/protos/server"
+	"github.com/kent-h/stateful-router/example-service/service"
 	"os"
 	"os/signal"
 	"regexp"
@@ -36,7 +36,7 @@ func main() {
 
 	fmt.Println("ordinal:", ordinal)
 
-	client := example_service.New(uint32(ordinal), peerDNSFormat, listenAddress)
+	client := service.New(uint32(ordinal), peerDNSFormat, listenAddress)
 
 	//go sendDummyRequests(client, uint32(ordinal))
 

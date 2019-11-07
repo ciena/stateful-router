@@ -6,7 +6,7 @@ package peer;
 
 service Peer {
   rpc Hello (HelloRequest) returns (google.protobuf.Empty) {}
-  rpc NextDevice (NextDeviceRequest) returns (NextDeviceResponse) {}
+  rpc NextResource (NextResourceRequest) returns (NextResourceResponse) {}
   rpc UpdateReadiness (ReadinessRequest) returns (google.protobuf.Empty) {}
   rpc UpdateStats (StatsRequest) returns (google.protobuf.Empty) {}
   rpc Handoff (HandoffRequest) returns (google.protobuf.Empty) {}
@@ -16,37 +16,55 @@ message HelloRequest {
   uint32 ordinal = 1;
 }
 
-message NextDeviceRequest {
+message NextResourceRequest {
   uint32 ordinal = 1;
 
-  bytes readiness = 2;
-  bool ready_for_equal = 3;
-  bool readiness_max = 4;
+  uint32 resource_type = 2;
+
+  bytes readiness = 3;
+  bool ready_for_equal = 4;
+  bool readiness_max = 5;
 }
 
-message NextDeviceResponse {
+message NextResourceResponse {
   bool has = 1;
   bool last = 2;
-  bytes device = 3;
+  bytes resource_id = 3;
 }
 
 message ReadinessRequest {
   uint32 ordinal = 1;
 
+  // would prefer to use a map, but []byte is not a supported key type, and string must be in UTF-8 format (cannot be arbitrary bytes)
+  repeated Readiness readiness = 2;
+
+  bool shutting_down = 3;
+}
+
+message Readiness {
+  uint32 resource_type = 1;
   bytes readiness = 2;
   bool ready_for_equal = 3;
-  bool readiness_max = 4;
-
-  bool shutting_down = 5;
+  bool max = 4;
 }
 
 message StatsRequest {
-  map<uint32, uint32> device_counts = 1;
+  map<uint32, NodeStats> resource_stats = 1;
+}
+
+message NodeStats {
+  repeated NodeStat stats = 1;
+}
+
+message NodeStat {
+  uint32 ordinal = 1;
+  uint32 count = 2;
 }
 
 message HandoffRequest {
-  bytes device = 1;
+  uint32 resource_type = 1;
+  bytes resource_id = 2;
 
-  uint32 ordinal = 2;
-  uint32 devices = 3;
+  uint32 ordinal = 3;
+  uint32 resource_count = 4;
 }

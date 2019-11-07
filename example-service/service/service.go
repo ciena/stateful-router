@@ -1,4 +1,4 @@
-package example_service
+package service
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"os"
 	"sync"
 )
+
+const resourceTypeDevice = 0
 
 type StatefulService struct {
 	router   *router.Router
@@ -50,7 +52,7 @@ func New(ordinal uint32, peerDNSFormat, address string) *StatefulService {
 func (ss *StatefulService) start(ordinal uint32, peerDNSFormat, address string) {
 	// create routing instance
 	ss.server = grpc.NewServer(router.GRPCSettings()...)
-	ss.router = router.New(ss.server, ordinal, peerDNSFormat, ss, nil)
+	ss.router = router.New(ss.server, ordinal, peerDNSFormat, ss, nil, resourceTypeDevice)
 	// register self
 	stateful.RegisterStatefulServer(ss.server, ss)
 	// listen for requests
@@ -69,7 +71,7 @@ func (ss *StatefulService) Stop() {
 }
 
 // implementing routing.DeviceLocker
-func (ss *StatefulService) Load(ctx context.Context, device string) error {
+func (ss *StatefulService) Load(ctx context.Context, _ router.ResourceType, device string) error {
 	// acquire lock
 	response, err := ss.dbClient.Lock(ctx, &db.LockRequest{Device: device})
 	if err != nil {
@@ -89,21 +91,21 @@ func (ss *StatefulService) Load(ctx context.Context, device string) error {
 }
 
 // implementing routing.DeviceLocker
-func (ss *StatefulService) Unload(device string) {
+func (ss *StatefulService) Unload(_ router.ResourceType, device string) {
 	ss.mutex.Lock()
 	state := ss.localState[device]
 	delete(ss.localState, device)
 	ss.mutex.Unlock()
 
 	// flush data to db
-	ss.dbClient.SetData(context.Background(), &db.SetDataRequest{Device: device, Lock: state.lock, Data: state.data})
+	_, _ = ss.dbClient.SetData(context.Background(), &db.SetDataRequest{Device: device, Lock: state.lock, Data: state.data})
 
 	// release lock
-	ss.dbClient.Unlock(context.Background(), &db.UnlockRequest{Device: device, LockId: state.lock})
+	_, _ = ss.dbClient.Unlock(context.Background(), &db.UnlockRequest{Device: device, LockId: state.lock})
 }
 
 func (ss *StatefulService) SetData(ctx context.Context, request *stateful.SetDataRequest) (*empty.Empty, error) {
-	if mutex, cc, forward, err := ss.router.Locate(request.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(resourceTypeDevice, request.Device); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {
 		return stateful.NewStatefulClient(cc).SetData(ctx, request)
@@ -125,7 +127,7 @@ func (ss *StatefulService) SetData(ctx context.Context, request *stateful.SetDat
 }
 
 func (ss *StatefulService) GetData(ctx context.Context, request *stateful.GetDataRequest) (*stateful.GetDataResponse, error) {
-	if mutex, cc, forward, err := ss.router.Locate(request.Device); err != nil {
+	if mutex, cc, forward, err := ss.router.Locate(resourceTypeDevice, request.Device); err != nil {
 		return &stateful.GetDataResponse{}, err
 	} else if forward {
 		return stateful.NewStatefulClient(cc).GetData(ctx, request)

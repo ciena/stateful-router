@@ -14,35 +14,66 @@ func (router *Router) startStatsNotifier() {
 		router.deviceCountEventData = deviceCountEventData{
 			ch:             ch,
 			updateComplete: make(chan struct{}),
-			updatingPeers:  make(map[uint32]uint32),
+			resources:      make(map[ResourceType]map[uint32]uint32),
 		}
 		router.eventMutex.Unlock()
 
-		router.deviceMutex.RLock()
-		deviceCount := uint32(len(router.devices))
-		router.deviceMutex.RUnlock()
+		// generate the list of updates
+		resourceStats := make(map[uint32]*peer.NodeStats, len(data.resources))
+		for resourceType, updatingForPeers := range data.resources {
+			update := &peer.NodeStats{}
+			// add stats from self
+			resource := router.resources[resourceType]
+
+			resource.deviceMutex.RLock()
+			count := uint32(len(resource.devices))
+			resource.deviceMutex.RUnlock()
+
+			update.Stats = append(update.Stats, &peer.NodeStat{
+				Ordinal: router.ordinal,
+				Count:   count,
+			})
+
+			// add stats from peers
+			for nodeId, count := range updatingForPeers {
+				update.Stats = append(update.Stats, &peer.NodeStat{
+					Ordinal: nodeId,
+					Count:   count,
+				})
+			}
+
+			resourceStats[uint32(resourceType)] = update
+		}
 
 		// inform peers of changes to device counts
-		router.peerMutex.RLock()
+		router.peerMutex.Lock()
 		//update ourselves
-		for nodeId, devices := range data.updatingPeers {
-			if node, have := router.peers[nodeId]; have {
-				node.devices = devices
+		for resourceType, updatingForPeers := range data.resources {
+			for nodeId, devices := range updatingForPeers {
+				if node, have := router.peers[nodeId]; have {
+					nodeResource := node.resources[resourceType]
+					nodeResource.count = devices
+					node.resources[resourceType] = nodeResource
+				}
+			}
+			if len(updatingForPeers) != 0 {
+				router.rebalance(resourceType)
 			}
 		}
-		//update others
+
+		// get the list of peers
 		toUpdate := make(map[*node]struct{}, len(router.peers))
 		for _, node := range router.peers {
 			if node.connected {
 				toUpdate[node] = struct{}{}
 			}
 		}
-		router.peerMutex.RUnlock()
+		router.peerMutex.Unlock()
 
-		data.updatingPeers[router.ordinal] = deviceCount
+		// send updates to peers
 		for node := range toUpdate {
-			if _, err := node.UpdateStats(router.ctx, &peer.StatsRequest{DeviceCounts: data.updatingPeers}); err != nil {
-				fmt.Println(err)
+			if _, err := node.UpdateStats(router.ctx, &peer.StatsRequest{ResourceStats: resourceStats}); err != nil {
+				fmt.Println("unable to update stats:", err)
 			}
 		}
 

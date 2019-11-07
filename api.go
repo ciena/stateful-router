@@ -7,12 +7,14 @@ import (
 	"time"
 )
 
+const errorResourceTypeNotFound = "the resource type %d does not exist"
+
 type DeviceLoader interface {
-	Load(ctx context.Context, deviceId string) error
-	Unload(deviceId string)
+	Load(ctx context.Context, resourceType ResourceType, resourceId string) error
+	Unload(resourceType ResourceType, resourceId string)
 }
 
-func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func()) *Router {
+func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader DeviceLoader, readyCallback func(), resourceTypes ...ResourceType) *Router {
 	ctx, ctxCancelFunc := context.WithCancel(context.Background())
 	handoffAndShutdown := make(chan struct{})
 	router := &Router{
@@ -21,17 +23,28 @@ func New(server *grpc.Server, ordinal uint32, peerDNSFormat string, loader Devic
 		handoffAndShutdown: handoffAndShutdown,
 		ctx:                ctx,
 		peers:              make(map[uint32]*node),
-		devices:            make(map[string]*deviceData),
+		resources:          make(map[ResourceType]*resourceData),
 		deviceCountEventData: deviceCountEventData{
 			updateComplete: make(chan struct{}),
-			updatingPeers:  make(map[uint32]uint32),
+			resources:      make(map[ResourceType]map[uint32]uint32),
 		},
 		rebalanceEventData: rebalanceEventData{
-			newPeers: make(map[peer.PeerClient]struct{}),
+			newPeers:      make(map[peer.PeerClient]struct{}),
+			resourceTypes: make(map[ResourceType]struct{}),
 		},
 		deviceCountEventHandlerDone: make(chan struct{}),
 		rebalanceEventHandlerDone:   make(chan struct{}),
 		loader:                      loader,
+	}
+
+	// create data structure for each resource type
+	if len(resourceTypes) == 0 {
+		panic("at least one resources type must be provided for routing")
+	}
+	for _, resourceType := range resourceTypes {
+		router.resources[resourceType] = &resourceData{
+			devices: make(map[string]*deviceData),
+		}
 	}
 
 	// connect to all nodes with smaller ordinal than ours
@@ -68,29 +81,33 @@ func (router *Router) Stop() {
 // this should be called when a device has been, or should be,
 // unloaded **from the local node only** due to external circumstance
 // (device lock lost, device deleted, inactivity timeout, etc.)
-func (router *Router) UnloadDevice(deviceId string) {
-	router.UnloadDeviceWithUnloadFunc(deviceId, router.loader.Unload)
+func (router *Router) UnloadDevice(resourceType ResourceType, key string) {
+	router.UnloadDeviceWithUnloadFunc(resourceType, key, router.loader.Unload)
 }
 
-func (router *Router) UnloadDeviceWithUnloadFunc(deviceId string, unloadFunc func(deviceId string)) {
-	router.deviceMutex.Lock()
-	device, have := router.devices[deviceId]
-	delete(router.devices, deviceId)
-	router.deviceMutex.Unlock()
+func (router *Router) UnloadDeviceWithUnloadFunc(resourceType ResourceType, resourceId string, unloadFunc func(resourceType ResourceType, resourceId string)) {
+	resource := router.resources[resourceType]
+
+	resource.deviceMutex.Lock()
+	device, have := resource.devices[resourceId]
+	if have {
+		delete(resource.devices, resourceId)
+	}
+	resource.deviceMutex.Unlock()
 
 	if have {
-		router.deviceCountChanged()
-		router.unloadDevice(deviceId, device, unloadFunc)
+		router.deviceCountChanged(resourceType)
+		router.unloadDevice(resourceType, resourceId, device, unloadFunc)
 	}
 }
 
 // Locate returns a processor for the given device,
 // to either handle the request locally,
 // or forward it on to the appropriate peer
-func (router *Router) Locate(deviceId string) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
-	return router.locate(deviceId, router.deviceCountChanged, router.loader.Load)
+func (router *Router) Locate(resourceType ResourceType, resourceId string) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+	return router.locate(resourceType, resourceId, router.deviceCountChanged, router.loader.Load)
 }
 
-func (router *Router) LocateWithLoadFunc(deviceId string, loadFunc func(ctx context.Context, deviceId string) error) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
-	return router.locate(deviceId, router.deviceCountChanged, loadFunc)
+func (router *Router) LocateWithLoadFunc(resourceType ResourceType, resourceId string, loadFunc func(ctx context.Context, resourceType ResourceType, deviceId string) error) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+	return router.locate(resourceType, resourceId, router.deviceCountChanged, loadFunc)
 }

@@ -9,7 +9,6 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +34,7 @@ func main() {
 }
 
 func cli(client stateful.StatefulClient) {
-	regex := regexp.MustCompile(`^(set|get) (\d+)(.*)$`)
+	regex := regexp.MustCompile(`^(set|get) ([^ ]+)(.*)$`)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
@@ -45,13 +44,10 @@ func cli(client stateful.StatefulClient) {
 			continue
 		}
 
-		deviceId, err := strconv.ParseUint(array[2], 10, 64)
-		if err != nil {
-			panic(err)
-		}
+		deviceId := array[2]
 
 		if array[1] == "set" {
-			if client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))}); err != nil {
+			if _, err := client.SetData(context.Background(), &stateful.SetDataRequest{Device: deviceId, Data: []byte(strings.TrimSpace(array[3]))}); err != nil {
 				fmt.Println(">", err)
 			} else {
 				fmt.Println("> OK")
