@@ -5,14 +5,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/kent-h/stateful-router/protos/test"
-	"google.golang.org/grpc"
 	"math/rand"
 	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/kent-h/stateful-router/protos/test"
+	"google.golang.org/grpc"
 )
 
 const assumePropagationDelay = time.Millisecond * 30
@@ -290,11 +291,15 @@ func verifyDeviceCounts(clients []*dummyStatefulServerProxy, numDevices int) err
 		if i < numDevices%len(clients) {
 			spare = 1
 		}
-		shouldHave, have := numDevices/len(clients)+spare, len(client.router.resources[resourceTypeDevice].devices)
+		client.router.resources[resourceTypeDevice].mutex.RLock()
+		shouldHave, have := numDevices/len(clients)+spare, len(client.router.resources[resourceTypeDevice].loaded)
+		client.router.resources[resourceTypeDevice].mutex.RUnlock()
 		if have != shouldHave {
 			str := fmt.Sprintf("wrong number of devices on core (%d total)\n", numDevices)
 			for i, client := range clients {
-				str += fmt.Sprintln(i, "has", len(client.router.resources[resourceTypeDevice].devices), "devices")
+				client.router.resources[resourceTypeDevice].mutex.RLock()
+				str += fmt.Sprintln(i, "has", len(client.router.resources[resourceTypeDevice].loaded), "devices")
+				client.router.resources[resourceTypeDevice].mutex.RUnlock()
 			}
 			str += fmt.Sprintf("client %d should have %d devices, has %d\n", i, shouldHave, have)
 			return errors.New(str)

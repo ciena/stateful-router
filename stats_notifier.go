@@ -6,12 +6,12 @@ import (
 )
 
 func (router *Router) startStatsNotifier() {
-	defer close(router.deviceCountEventHandlerDone)
+	defer close(router.statusNotifierDone)
 	for {
 		router.eventMutex.Lock()
 		ch := make(chan struct{})
-		data := router.deviceCountEventData
-		router.deviceCountEventData = deviceCountEventData{
+		data := router.resourceCountEventData
+		router.resourceCountEventData = resourceCountEventData{
 			ch:             ch,
 			updateComplete: make(chan struct{}),
 			resources:      make(map[ResourceType]map[uint32]uint32),
@@ -25,9 +25,9 @@ func (router *Router) startStatsNotifier() {
 			// add stats from self
 			resource := router.resources[resourceType]
 
-			resource.deviceMutex.RLock()
-			count := uint32(len(resource.devices))
-			resource.deviceMutex.RUnlock()
+			resource.mutex.RLock()
+			count := uint32(len(resource.loaded))
+			resource.mutex.RUnlock()
 
 			update.Stats = append(update.Stats, &peer.NodeStat{
 				Ordinal: router.ordinal,
@@ -82,7 +82,7 @@ func (router *Router) startStatsNotifier() {
 		select {
 		case <-router.ctx.Done():
 			// anyone waiting for us can exit
-			close(router.deviceCountEventData.updateComplete)
+			close(router.resourceCountEventData.updateComplete)
 			return
 		case <-ch: // on event, repeat
 		}

@@ -3,9 +3,10 @@ package router
 import (
 	"context"
 	"fmt"
-	"github.com/kent-h/stateful-router/protos/peer"
 	"sort"
 	"strconv"
+
+	"github.com/kent-h/stateful-router/protos/peer"
 )
 
 func (router *Router) startRebalancer(handoffAndShutdown chan struct{}, ctxCancelFunc context.CancelFunc) {
@@ -60,15 +61,15 @@ func (router *Router) startRebalancer(handoffAndShutdown chan struct{}, ctxCance
 			for resourceType := range data.resourceTypes {
 				localResource := router.resources[resourceType]
 
-				localResource.deviceMutex.RLock()
-				deviceCount := uint32(len(localResource.devices))
+				localResource.mutex.RLock()
+				deviceCount := uint32(len(localResource.loaded))
 				var proposedDecrementReadiness string
-				for deviceId := range localResource.devices {
+				for deviceId := range localResource.loaded {
 					if deviceId > proposedDecrementReadiness {
 						proposedDecrementReadiness = deviceId
 					}
 				}
-				localResource.deviceMutex.RUnlock()
+				localResource.mutex.RUnlock()
 
 				// we want to jump to max (accept all resources) if all nodes w/ > readiness are suddenly missing
 				// we want to increment if resources < average # of resources on nodes w/ >= the proposed readiness
@@ -155,23 +156,23 @@ func (router *Router) startRebalancer(handoffAndShutdown chan struct{}, ctxCance
 					router.changeReadinessTo(resourceType, false, proposedDecrementReadiness, false, false, shuttingDown)
 
 					// after readiness is decreased, kick out any resources that no longer belong on this node
-					localResource.deviceMutex.Lock()
-					originalDeviceCount := uint32(len(localResource.devices))
-					devicesToMove := make(map[string]*deviceData)
+					localResource.mutex.Lock()
+					originalDeviceCount := uint32(len(localResource.loaded))
+					instancesToMove := make(map[string]*syncher)
 					if !localResource.readinessMax {
-						for deviceId, device := range localResource.devices {
+						for deviceId, device := range localResource.loaded {
 							//for every device that no longer belongs on this node
 							if deviceId > localResource.readiness || (deviceId == localResource.readiness && !localResource.readyForEqual) {
 								fmt.Printf("Will migrate device %s\n", strconv.Quote(deviceId))
 								//release and notify that it's moved
-								devicesToMove[deviceId] = device
-								delete(localResource.devices, deviceId)
+								instancesToMove[deviceId] = device
+								delete(localResource.loaded, deviceId)
 							}
 						}
 					}
-					localResource.deviceMutex.Unlock()
+					localResource.mutex.Unlock()
 
-					router.migrateResources(resourceType, devicesToMove, originalDeviceCount)
+					router.migrateResources(resourceType, instancesToMove, originalDeviceCount)
 				} else {
 					delete(data.resourceTypes, resourceType)
 				}

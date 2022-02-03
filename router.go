@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/kent-h/stateful-router/protos/peer"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/keepalive"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/kent-h/stateful-router/protos/peer"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/keepalive"
 )
 
 var (
@@ -69,16 +70,16 @@ type Router struct {
 	peers     map[uint32]*node
 
 	// events are sent to startRebalancer() and startStatsNotifier()
-	eventMutex           sync.Mutex
-	deviceCountEventData deviceCountEventData
-	rebalanceEventData   rebalanceEventData
+	eventMutex             sync.Mutex
+	resourceCountEventData resourceCountEventData
+	rebalanceEventData     rebalanceEventData
 	// triggers clean shutdown
 	handoffAndShutdown chan struct{}
 	// when shutting down, startRebalancer() and startStatsNotifier() close these channels
-	deviceCountEventHandlerDone chan struct{}
-	rebalanceEventHandlerDone   chan struct{}
+	statusNotifierDone chan struct{}
+	rebalancerDone     chan struct{}
 
-	loader DeviceLoader
+	loader Loader
 }
 
 type ResourceType uint32
@@ -91,9 +92,9 @@ type resourceData struct {
 	readinessMax               bool
 	decreasingFromMaxReadiness bool
 
-	// deviceMutex synchronizes all access to resources
-	deviceMutex sync.RWMutex
-	devices     map[string]*deviceData
+	// mutex synchronizes all access to resources
+	mutex  sync.RWMutex
+	loaded map[string]*syncher
 }
 
 type node struct {
@@ -103,10 +104,10 @@ type node struct {
 	shuttingDown bool
 
 	// resource-specific information
-	resources map[ResourceType]nodeResourceData
+	resources map[ResourceType]metadata
 }
 
-type nodeResourceData struct {
+type metadata struct {
 	readiness     string // which resources are ready
 	readyForEqual bool
 	readinessMax  bool
@@ -114,11 +115,11 @@ type nodeResourceData struct {
 	count uint32 // number of resources this node is handling
 }
 
-type deviceData struct {
+type syncher struct {
 	// mutex is read-locked for the duration of every request,
-	// the device will not be unlocked/migrated until all requests release it
+	// the instance will not be unlocked/migrated until all requests release it
 	mutex sync.RWMutex
-	// closed only after the device lock attempt is completed (and loadingError is set)
+	// closed only after the instance lock attempt is completed (and loadingError is set)
 	loadingDone  chan struct{}
 	loadingError error
 }
@@ -144,7 +145,7 @@ func (router *Router) connect(ordinal uint32) {
 		node := &node{
 			clientConn: cc,
 			PeerClient: peer.NewPeerClient(cc),
-			resources:  make(map[ResourceType]nodeResourceData),
+			resources:  make(map[ResourceType]metadata),
 		}
 		router.peers[ordinal] = node
 
@@ -189,7 +190,7 @@ func (router *Router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32)
 			} else {
 				node.connected = false
 				node.shuttingDown = false
-				node.resources = make(map[ResourceType]nodeResourceData)
+				node.resources = make(map[ResourceType]metadata)
 				router.rebalanceAll()
 				router.peerMutex.Unlock()
 			}
@@ -198,19 +199,19 @@ func (router *Router) watchState(cc *grpc.ClientConn, node *node, nodeId uint32)
 	cc.Close()
 }
 
-func (router *Router) migrateResources(resourceType ResourceType, resourcesToMove map[string]*deviceData, originalDeviceCount uint32) {
+func (router *Router) migrateResources(resourceType ResourceType, resourcesToMove map[string]*syncher, originalDeviceCount uint32) {
 	if len(resourcesToMove) != 0 {
 		var ctr uint32
-		for deviceId, device := range resourcesToMove {
+		for resourceId, syncher := range resourcesToMove {
 			ctr++
-			router.migrateResource(resourceType, deviceId, device, originalDeviceCount-ctr)
+			router.migrateResource(resourceType, resourceId, syncher, originalDeviceCount-ctr)
 		}
-		router.deviceCountChanged(resourceType)
+		router.resourceCountChanged(resourceType)
 	}
 }
 
-func (router *Router) migrateResource(resourceType ResourceType, resourceId string, device *deviceData, resourceCount uint32) {
-	router.unloadDevice(resourceType, resourceId, device, router.loader.Unload)
+func (router *Router) migrateResource(resourceType ResourceType, resourceId string, syncher *syncher, resourceCount uint32) {
+	router.unloadResource(resourceType, resourceId, syncher, router.loader.Unload)
 
 	peerApi := peerApi{router}
 	if _, err := peerApi.Handoff(router.ctx, &peer.HandoffRequest{
@@ -223,31 +224,31 @@ func (router *Router) migrateResource(resourceType ResourceType, resourceId stri
 	}
 }
 
-func (router *Router) unloadDevice(resourceType ResourceType, deviceId string, device *deviceData, unloadFunc func(resourceType ResourceType, deviceId string)) {
-	// ensure the device has actually finished loading
-	<-device.loadingDone
-	if device.loadingError == nil {
+func (router *Router) unloadResource(resourceType ResourceType, resourceId string, syncher *syncher, unloadFunc func(resourceType ResourceType, deviceId string)) {
+	// ensure the resource has actually finished loading
+	<-syncher.loadingDone
+	if syncher.loadingError == nil {
 		// wait for all in-progress requests to drain
-		device.mutex.Lock()
-		defer device.mutex.Unlock()
+		syncher.mutex.Lock()
+		defer syncher.mutex.Unlock()
 
-		fmt.Printf("Unloading device %s\n", strconv.Quote(deviceId))
-		unloadFunc(resourceType, deviceId)
+		fmt.Printf("Unloading resource %s\n", strconv.Quote(resourceId))
+		unloadFunc(resourceType, resourceId)
 	}
 }
 
 // bestOfUnsafe returns which node this request should be routed to
 // this takes into account node reachability & readiness
 // router.peerMutex is assumed to be held by the caller
-func (router *Router) bestOfUnsafe(resource *resourceData, resourceType ResourceType, deviceId string) (uint32, error) {
+func (router *Router) bestOfUnsafe(resource *resourceData, resourceType ResourceType, resourceId string) (uint32, error) {
 	// build a list of possible nodes, including this one
 	possibleNodes := make(map[uint32]struct{})
-	if deviceId < resource.readiness || (deviceId == resource.readiness && resource.readyForEqual) || resource.readinessMax {
+	if resourceId < resource.readiness || (resourceId == resource.readiness && resource.readyForEqual) || resource.readinessMax {
 		possibleNodes[router.ordinal] = struct{}{}
 	}
 	for nodeId, node := range router.peers {
 		nodeData := node.resources[resourceType]
-		if node.connected && (deviceId < nodeData.readiness || (deviceId == nodeData.readiness && nodeData.readyForEqual) || nodeData.readinessMax) {
+		if node.connected && (resourceId < nodeData.readiness || (resourceId == nodeData.readiness && nodeData.readyForEqual) || nodeData.readinessMax) {
 			possibleNodes[nodeId] = struct{}{}
 		}
 	}
@@ -256,32 +257,32 @@ func (router *Router) bestOfUnsafe(resource *resourceData, resourceType Resource
 		return 0, errors.New("no peers are ready to process this request")
 	}
 
-	// use the device ID to deterministically determine the best possible node
-	return BestOf(deviceId, possibleNodes), nil
+	// use the resource ID to deterministically determine the best possible node
+	return BestOf(resourceId, possibleNodes), nil
 }
 
-func (router *Router) locate(resourceType ResourceType, resourceId string, deviceCountChangedCallback func(resourceType ResourceType), loadFunc func(ctx context.Context, resourceType ResourceType, resourceId string) error) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
+func (router *Router) locate(resourceType ResourceType, resourceId string, resourceCountChangedCallback func(resourceType ResourceType), loadFunc func(ctx context.Context, resourceType ResourceType, resourceId string) error) (interface{ RUnlock() }, *grpc.ClientConn, bool, error) {
 	resource, have := router.resources[resourceType]
 	if !have {
 		return nil, nil, false, fmt.Errorf(errorResourceTypeNotFound, resourceType)
 	}
 
-	resource.deviceMutex.RLock()
-	// if we have the device loaded, just process the request locally
-	if device, have := resource.devices[resourceId]; have {
-		device.mutex.RLock()
-		resource.deviceMutex.RUnlock()
-		<-device.loadingDone
-		if device.loadingError != nil {
-			device.mutex.RUnlock()
-			return nil, nil, false, device.loadingError
+	resource.mutex.RLock()
+	// if we have the resource loaded, just process the request locally
+	if instance, have := resource.loaded[resourceId]; have {
+		instance.mutex.RLock()
+		resource.mutex.RUnlock()
+		<-instance.loadingDone
+		if instance.loadingError != nil {
+			instance.mutex.RUnlock()
+			return nil, nil, false, instance.loadingError
 		}
-		return &device.mutex, nil, false, nil
+		return &instance.mutex, nil, false, nil
 	}
-	resource.deviceMutex.RUnlock()
+	resource.mutex.RUnlock()
 
 	router.peerMutex.RLock()
-	// use the device ID to deterministically determine the best possible node
+	// use the resource ID to deterministically determine the best possible node
 	node, err := router.bestOfUnsafe(resource, resourceType, resourceId)
 	if err != nil {
 		router.peerMutex.RUnlock()
@@ -297,40 +298,40 @@ func (router *Router) locate(resourceType ResourceType, resourceId string, devic
 	router.peerMutex.RUnlock()
 	// else, if this is the best node
 
-	resource.deviceMutex.Lock()
-	if _, have := resource.devices[resourceId]; have {
-		// some other thread loaded the device since we last checked
-		resource.deviceMutex.Unlock()
-		return router.locate(resourceType, resourceId, deviceCountChangedCallback, loadFunc)
+	resource.mutex.Lock()
+	if _, have := resource.loaded[resourceId]; have {
+		// some other thread loaded the resource since we last checked
+		resource.mutex.Unlock()
+		return router.locate(resourceType, resourceId, resourceCountChangedCallback, loadFunc)
 	}
-	device := &deviceData{
+	instance := &syncher{
 		loadingDone: make(chan struct{}),
 	}
-	device.mutex.RLock()
-	resource.devices[resourceId] = device
-	deviceCountChangedCallback(resourceType)
-	resource.deviceMutex.Unlock()
+	instance.mutex.RLock()
+	resource.loaded[resourceId] = instance
+	resourceCountChangedCallback(resourceType)
+	resource.mutex.Unlock()
 
-	fmt.Printf("Loading device %s\n", strconv.Quote(resourceId))
-	// have the implementation lock & load the device
+	fmt.Printf("Loading resource %s\n", strconv.Quote(resourceId))
+	// have the implementation lock & load the resource
 	if err := loadFunc(router.ctx, resourceType, resourceId); err != nil {
-		// failed to load the device, release it
-		resource.deviceMutex.Lock()
-		if dev, have := resource.devices[resourceId]; have && dev == device {
-			delete(resource.devices, resourceId)
-			router.deviceCountChanged(resourceType)
+		// failed to load the resource, release it
+		resource.mutex.Lock()
+		if dev, have := resource.loaded[resourceId]; have && dev == instance {
+			delete(resource.loaded, resourceId)
+			router.resourceCountChanged(resourceType)
 		}
-		resource.deviceMutex.Unlock()
+		resource.mutex.Unlock()
 
-		device.mutex.RUnlock()
+		instance.mutex.RUnlock()
 		//inform any waiting threads that loading failed
-		device.loadingError = err
-		close(device.loadingDone)
+		instance.loadingError = err
+		close(instance.loadingDone)
 		return nil, nil, false, err
 	} else {
-		close(device.loadingDone)
+		close(instance.loadingDone)
 
-		// since we pre-RLocked this device, we already own it
-		return &device.mutex, nil, false, nil
+		// since we pre-RLocked this resource, we already own it
+		return &instance.mutex, nil, false, nil
 	}
 }

@@ -40,14 +40,14 @@ func (router peerApi) NextResource(ctx context.Context, request *peer.NextResour
 	if !have {
 		return &peer.NextResourceResponse{}, fmt.Errorf(errorResourceTypeNotFound, ResourceType(request.ResourceType))
 	}
-	resource.deviceMutex.RLock()
-	defer resource.deviceMutex.RUnlock()
+	resource.mutex.RLock()
+	defer resource.mutex.RUnlock()
 
 	migrateNext := ""
 	found := false
 	first, isOnlyDeviceToMigrate := true, false
 	if !request.ReadinessMax {
-		for deviceId := range resource.devices {
+		for deviceId := range resource.loaded {
 			// for every device that belongs on the other node
 			if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
 				// find the lowest device that's > other.readiness
@@ -125,23 +125,23 @@ func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.Readine
 		requestResourceType := ResourceType(requestResource.ResourceType)
 		routerResource := router.resources[requestResourceType]
 
-		routerResource.deviceMutex.Lock()
-		originalDeviceCount := uint32(len(routerResource.devices))
-		devicesToMove := make(map[string]*deviceData)
-		for deviceId, device := range routerResource.devices {
+		routerResource.mutex.Lock()
+		originalDeviceCount := uint32(len(routerResource.loaded))
+		instancesToMove := make(map[string]*syncher)
+		for deviceId, device := range routerResource.loaded {
 			//for every device that belongs on the other node
 			if BestNode(deviceId, router.ordinal, map[uint32]struct{}{request.Ordinal: {}}) == request.Ordinal {
 				// if the other node is ready for this device
 				if deviceId < string(requestResource.Readiness) || (deviceId == string(requestResource.Readiness) && requestResource.ReadyForEqual) {
 					//release and notify that it's moved
-					devicesToMove[deviceId] = device
-					delete(routerResource.devices, deviceId)
+					instancesToMove[deviceId] = device
+					delete(routerResource.loaded, deviceId)
 				}
 			}
 		}
-		routerResource.deviceMutex.Unlock()
+		routerResource.mutex.Unlock()
 
-		router.migrateResources(requestResourceType, devicesToMove, originalDeviceCount)
+		router.migrateResources(requestResourceType, instancesToMove, originalDeviceCount)
 
 		if shuttingDownStateChanged {
 			router.rebalanceAll()
@@ -159,7 +159,7 @@ func (router peerApi) UpdateReadiness(ctx context.Context, request *peer.Readine
 func (router peerApi) Handoff(ctx context.Context, request *peer.HandoffRequest) (*empty.Empty, error) {
 	var peerUpdateComplete chan struct{}
 	if mutex, remoteHandler, forward, err := router.locate(ResourceType(request.ResourceType), string(request.ResourceId), func(resourceType ResourceType) {
-		peerUpdateComplete = router.deviceCountChangedWithUpdateForPeer(resourceType, request.Ordinal, request.ResourceCount)
+		peerUpdateComplete = router.resourceCountChangedWithUpdateForPeer(resourceType, request.Ordinal, request.ResourceCount)
 	}, router.loader.Load); err != nil {
 		return &empty.Empty{}, err
 	} else if forward {

@@ -8,7 +8,7 @@ type rebalanceEventData struct {
 	resourceTypes map[ResourceType]struct{}
 }
 
-type deviceCountEventData struct {
+type resourceCountEventData struct {
 	ch             chan struct{}
 	updateComplete chan struct{}
 
@@ -29,13 +29,13 @@ func (router *Router) rebalance(resourceType ResourceType) {
 	router.rebalanceUnsafe(resourceType)
 }
 
-func (router *Router) deviceCountChanged(resourceType ResourceType) {
+func (router *Router) resourceCountChanged(resourceType ResourceType) {
 	router.eventMutex.Lock()
 	defer router.eventMutex.Unlock()
 
 	router.rebalanceUnsafe(resourceType)
 
-	router.deviceCountChangedUnsafe(resourceType)
+	router.resourceCountChangedUnsafe(resourceType)
 }
 
 func (router *Router) peerConnected(node *node) {
@@ -45,44 +45,44 @@ func (router *Router) peerConnected(node *node) {
 	router.rebalanceEventData.newPeers[node] = struct{}{}
 	router.rebalanceAllUnsafe()
 
-	router.deviceCountAllChangedUnsafe()
+	router.resourceCountAllChangedUnsafe()
 }
 
 // used in order to proxy an update from a given peer
-// during migration, uninvolved peers are be notified of both peer's device count changes in a single update
-// this way, uninvolved peers won't see a change in the total device count
-func (router *Router) deviceCountChangedWithUpdateForPeer(resourceType ResourceType, nodeId, resourceCount uint32) chan struct{} {
+// during migration, uninvolved peers are be notified of both peer's resource count changes in a single update
+// this way, uninvolved peers won't see a change in the total resource count
+func (router *Router) resourceCountChangedWithUpdateForPeer(resourceType ResourceType, nodeId, resourceCount uint32) chan struct{} {
 	router.eventMutex.Lock()
 	defer router.eventMutex.Unlock()
 
 	router.rebalanceUnsafe(resourceType)
 
-	router.deviceCountChangedUnsafe(resourceType)
-	router.deviceCountEventData.resources[resourceType][nodeId] = resourceCount
+	router.resourceCountChangedUnsafe(resourceType)
+	router.resourceCountEventData.resources[resourceType][nodeId] = resourceCount
 
-	return router.deviceCountEventData.updateComplete
+	return router.resourceCountEventData.updateComplete
 }
 
-func (router *Router) deviceCountChangedUnsafe(resourceType ResourceType) {
-	if router.deviceCountEventData.ch != nil {
-		close(router.deviceCountEventData.ch)
-		router.deviceCountEventData.ch = nil
+func (router *Router) resourceCountChangedUnsafe(resourceType ResourceType) {
+	if router.resourceCountEventData.ch != nil {
+		close(router.resourceCountEventData.ch)
+		router.resourceCountEventData.ch = nil
 	}
 
-	if _, have := router.deviceCountEventData.resources[resourceType]; !have {
-		router.deviceCountEventData.resources[resourceType] = make(map[uint32]uint32)
+	if _, have := router.resourceCountEventData.resources[resourceType]; !have {
+		router.resourceCountEventData.resources[resourceType] = make(map[uint32]uint32)
 	}
 }
 
-func (router *Router) deviceCountAllChangedUnsafe() {
-	if router.deviceCountEventData.ch != nil {
-		close(router.deviceCountEventData.ch)
-		router.deviceCountEventData.ch = nil
+func (router *Router) resourceCountAllChangedUnsafe() {
+	if router.resourceCountEventData.ch != nil {
+		close(router.resourceCountEventData.ch)
+		router.resourceCountEventData.ch = nil
 	}
 
 	for resourceType := range router.resources {
-		if _, have := router.deviceCountEventData.resources[resourceType]; !have {
-			router.deviceCountEventData.resources[resourceType] = make(map[uint32]uint32)
+		if _, have := router.resourceCountEventData.resources[resourceType]; !have {
+			router.resourceCountEventData.resources[resourceType] = make(map[uint32]uint32)
 		}
 	}
 }
